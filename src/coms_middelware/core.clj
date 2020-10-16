@@ -1,9 +1,11 @@
 (ns coms-middelware.core
   (:require [clojure.tools.logging :as log]
             [clojure.core.async :refer [go-loop >!! chan <!!]]
-            [clojure-data-grinder-core.core :refer [Source Step]])
+            [clojure-data-grinder-core.core :refer [Source Grinder Sink Step]])
   (:import (java.net DatagramPacket DatagramSocket)
-           (java.nio ByteBuffer)))
+           (java.nio ByteBuffer)
+           (pt.iceman.middleware.cars.ev EVBased)
+           (pt.iceman.middleware.cars.ice ICEBased)))
 
 (defn- make-socket
   ([] (new DatagramSocket))
@@ -27,13 +29,45 @@
   (init [this]
     (log/debug "Initialized Source " name)
     (let [socket (make-socket (:port @conf))]
+      (swap! conf assoc :socket socket)
       (go-loop []
-        (.output this (-> (receive-packet socket (:buffer-size @conf))
-                         (byte-array)
-                         (ByteBuffer/wrap)))
-        (recur))))
+        (.output this (-> socket
+                          (receive-packet (:buffer-size @conf))
+                          (byte-array)
+                          (ByteBuffer/wrap)))
+        (if-not (:stopped @state)
+          (recur)
+          (do
+            (.close socket)
+            (prn "mcu source stopped"))))))
   (validate [this]
-    (if-let [result (v-fn conf)]
+    (if-let [result (v-fn @conf)]
+      (throw (ex-info "Problem validating Source conf!" result))
+      (log/debug "Source " name " validated")))
+  (getState [this] @state)
+  (stop [this]
+    (swap! state assoc :stopped true)))
+
+(defmulti get-command-type (fn [type ^ByteBuffer _] type))
+
+(defmethod get-command-type :ice [_ ^ByteBuffer value]
+  (ICEBased. value))
+
+(defmethod get-command-type :ev [_ ^ByteBuffer value]
+  (EVBased. value))
+
+(defrecord MCUOutGrinder [state name conf v-fn in x-fn out poll-frequency-s]
+  Grinder
+  (grind [this value]
+    (>!! (get-command-type (:type @conf) value)))
+  Step
+  (init [this]
+    (log/debug "Initialized Grinder " name)
+    (go-loop []
+      (.output this (<!! in))
+      (recur)))
+  (validate [this]
+    (if-let [result (v-fn @conf)]
       (throw (ex-info "Problem validating Source conf!" result))
       (log/debug "Source " name " validated")))
   (getState [this] @state))
