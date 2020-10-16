@@ -21,6 +21,12 @@ jobs: # basic units of work in a run
 
       - run: cd ~/comms-middleware
 
+      - run: git https://github.com/icemanmelting/comms-common.git
+
+      - run: cd comms-common && mvn clean && mvn install
+
+      - run: cd ~/comms-middleware
+
 #      - run: lein deps
 
       - save_cache: # generate and store cache in the .m2 directory using a key template
