@@ -37,15 +37,14 @@
                           (ByteBuffer/wrap)))
         (if-not (:stopped @state)
           (recur)
-          (do
-            (.close socket)
-            (prn "mcu source stopped"))))))
+          (.close socket)))))
   (validate [this]
     (if-let [result (v-fn @conf)]
       (throw (ex-info "Problem validating Source conf!" result))
       (log/debug "Source " name " validated")))
   (getState [this] @state)
   (stop [this]
+    (log/debug "Stopping MCUSource " name)
     (swap! state assoc :stopped true)))
 
 (defmulti get-command-type (fn [type ^ByteBuffer _] type))
@@ -64,7 +63,7 @@
   (init [this]
     (log/debug "Initialized Grinder " name)
     (go-loop []
-      (.grind this (<! in))
+      (.grind this (<!! in))
       (recur)))
   (validate [this]
     (if-let [result (v-fn @conf)]
