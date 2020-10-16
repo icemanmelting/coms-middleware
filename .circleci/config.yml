@@ -21,6 +21,8 @@ jobs: # basic units of work in a run
 
       - run: cd ~/comms-middleware
 
+      - run: apt-get install maven
+
       - run: git clone https://github.com/icemanmelting/comms-common.git
 
       - run: cd comms-common && mvn clean && mvn install
