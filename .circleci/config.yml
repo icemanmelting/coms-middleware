@@ -21,7 +21,7 @@ jobs: # basic units of work in a run
 
       - run: cd ~/comms-middleware
 
-      - run: lein deps
+#      - run: lein deps
 
       - save_cache: # generate and store cache in the .m2 directory using a key template
           paths:
