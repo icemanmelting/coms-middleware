@@ -2,25 +2,13 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :refer [chan <!! >! go]]
             [coms-middelware.core :refer :all])
-  (:import (java.net DatagramSocket InetSocketAddress DatagramPacket)
-           (java.nio ByteBuffer)
+  (:import
+    (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ice ICEBased)
-           (coms_middelware.core MCUSource)))
+           (coms_middelware.core MCUSource)
+           (java.io ByteArrayOutputStream ObjectOutputStream)))
 
-(defn- make-socket
-  ([] (new DatagramSocket))
-  ([port] (new DatagramSocket port)))
-
-(defn- send-packet
-  "Send a short textual message over a DatagramSocket to the specified
-  host and port. If the string is over 512 bytes long, it will be
-  truncated."
-  [^DatagramSocket socket msg ^String host port]
-  (let [payload (.getBytes msg)
-        length (min (alength payload) 14)
-        address (InetSocketAddress. host port)
-        packet (DatagramPacket. payload length address)]
-    (.send socket packet)))
+(defonce socket (make-socket 9998))
 
 (deftest mcu-source-test
   (let [state (atom {})
@@ -29,13 +17,10 @@
                     :buffer-size 14})
         out (chan)
         ^MCUSource mcu-source (->MCUSource state name conf nil out)]
-
-    (with-open [socket (make-socket)]
-      (.init mcu-source)
-      (send-packet socket "this is a test" "localhost" 9999)
-
-      (let [value (<!! out)]
-        (is (= "this is a test" (String. (.array value))))))
+    (.init mcu-source)
+    (send-packet socket (.getBytes "this is a test") "localhost" 9999)
+    (let [value (<!! out)]
+      (is (= "this is a test" (String. (.array value)))))
     (.stop mcu-source)))
 
 (defn- short-to-2-bytes[^Short s]
@@ -87,3 +72,41 @@
         50 (.getSpeed ice)
         3000 (.getRpm ice)
         80 (.getEngineTemperature ice)))))
+
+(deftest test-dashboard-sink
+  (let [speed (short-to-2-bytes 50)
+        temperature (short-to-2-bytes 80)
+        rpm (short-to-2-bytes 3000)
+        fuel (short-to-2-bytes 32)
+        arr (byte-array [0x00
+                         0xFF
+                         0xFF
+                         0x00
+                         0x00
+                         0xFF
+                         0xFF
+                         (first speed)
+                         (second speed)
+                         0x00
+                         0x00
+                         (first rpm)
+                         (second rpm)
+                         (first fuel)
+                         (second fuel)
+                         (first temperature)
+                         (second temperature)])
+        buff (ByteBuffer/wrap arr)
+        value (ICEBased. buff)
+        expected (serialize value)
+        state (atom {:stopped false})
+        conf (atom {:destination-port 9998
+                    :destination-host "localhost"
+                    :source-port 9999})
+        in (chan)
+        dashboard-sink (->DashboardSink state name conf nil in)]
+    (go (>! in value))
+    (.init dashboard-sink)
+    (let [result (-> socket
+                     (receive-packet (alength expected))
+                     (byte-array))]
+      (is (= (seq expected) (seq result))))))
