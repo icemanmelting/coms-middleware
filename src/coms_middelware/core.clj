@@ -1,12 +1,14 @@
 (ns coms-middelware.core
   (:require [clojure.tools.logging :as log]
             [clojure.core.async :refer [go-loop >!! chan <!! <!]]
-            [clojure-data-grinder-core.core :refer [Source Grinder Sink Step]])
-  (:import (java.net DatagramPacket DatagramSocket InetAddress InetSocketAddress SocketAddress)
+            [clojure-data-grinder-core.core :refer [Source Grinder Sink Step]]
+            [coms-middelware.postgres :as pg]
+            [coms-middelware.car-state :as c-state])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
            (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
-           (java.io ByteArrayOutputStream ObjectOutputStream ObjectInputStream ByteArrayInputStream)))
+           (java.io ByteArrayOutputStream ObjectOutputStream)))
 
 (defn make-socket
   ([] (new DatagramSocket))
@@ -33,20 +35,20 @@
 
 (defrecord MCUSource [state name conf v-fn out]
   Source
-  (output [this value]
+  (output [_ value]
     (log/debug "Adding value " value " to source channel " name)
     (>!! out value))
   Step
-  (init [this]
+  (init [_]
     (let [socket (make-socket (:port @conf))]
       (swap! conf assoc :socket socket)
       (log/debug "Initialized Source " name)
       (go-loop []
         (if-not (:stopped @state)
-          (do (.output this (-> socket
-                          (receive-packet (:buffer-size @conf))
-                          (byte-array)
-                          (ByteBuffer/wrap)))
+          (do (.output _ (-> socket
+                                (receive-packet (:buffer-size @conf))
+                                (byte-array)
+                                (ByteBuffer/wrap)))
               (recur))
           (.close socket)))))
   (validate [this]
@@ -79,8 +81,8 @@
         (recur))))
   (validate [this]
     (if-let [result (v-fn @conf)]
-      (throw (ex-info "Problem validating Source conf!" result))
-      (log/debug "Source " name " validated")))
+      (throw (ex-info "Problem validating Grinder conf!" result))
+      (log/debug "Grinder " name " validated")))
   (getState [this] @state)
   (stop [this] (swap! state assoc :stopped true)))
 
@@ -110,7 +112,64 @@
   (validate [this]
     (if-let [result (v-fn @conf)]
       (throw (ex-info "Problem validating Sink conf!" result))
-      (log/debug "Source " name " validated")))
+      (log/debug "Sink " name " validated")))
   (getState [this] @state)
   (stop [this]
     (swap! state assoc :stopped true)))
+
+(defrecord StateGrinder [state name conf v-fn in out]
+  Grinder
+  (grind [this value]
+    (.alterState (:car-state @conf) value)
+    (>!! out value))
+  Step
+  (init [this]
+    (log/debug "Initialized Grinder " name)
+    (swap! conf assoc :car-state (c-state/get-car-state (:type @conf)))
+    (go-loop []
+      (if-not (:stopped @state)
+        (when-let [value (<!! in)]
+          (.grind this value)
+          (recur)))))
+  (validate [this]
+    (if-let [result (v-fn @conf)]
+      (throw (ex-info "Problem validating Grinder conf!" result))
+      (log/debug "Grinder " name " validated")))
+  (getState [this] @state)
+  (stop [this]
+    (swap! state assoc :stopped true)))
+
+;(defprotocol DashboardDataSaver
+;  (saveDashboardData [this data])
+;  (readDashboardData [this]))
+;
+;(defrecord PostgresDataSaver [conf]
+;  DashboardDataSaver
+;  (saveDashboardData [this data]
+;    )
+;  (readDashboardData [this]))
+
+
+;(defrecord DataSink [state name conf v-fn in]
+;  Sink
+;  (sink [this value]
+;    (let [^BaseCommand cmd value]
+;      #_(when (and (.isIgnition cmd) (not @ignition-state))
+;        (reset! trip-id pg/uuid)
+;        (reset! ignition-state true))
+;      #_(when (and (not (.isIgnition cmd)) @ignition-state)
+;        (reset! ignition-state false))
+;
+;      )
+;    )
+;  Step
+;  (init [this]
+;    (log/debug "Initialized Sink " name)
+;    (swap! conf merge (get-db conf)))
+;  (validate [this]
+;    (if-let [result (v-fn @conf)]
+;      (throw (ex-info "Problem validating Sink conf!" result))
+;      (log/debug "Source " name " validated")))
+;  (getState [this] @state)
+;  (stop [this]
+;    (swap! state assoc :stopped true)))
