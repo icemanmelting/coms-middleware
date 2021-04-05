@@ -1,4 +1,4 @@
-(ns coms-middelware.postgres
+(ns coms-middleware.postgres
   (:require [hugsql.core :as hugsql]
             [hugsql.adapter.clojure-java-jdbc :as adp])
   (:import (java.util UUID)))

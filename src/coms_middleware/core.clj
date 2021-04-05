@@ -1,14 +1,15 @@
-(ns coms-middelware.core
+(ns coms-middleware.core
   (:require [clojure.tools.logging :as log]
             [clojure.core.async :refer [go-loop >!! chan <!! <!]]
             [clojure-data-grinder-core.core :refer [Source Grinder Sink Step]]
-            [coms-middelware.postgres :as pg]
-            [coms-middelware.car-state :as c-state])
+            [coms-middleware.postgres :as pg]
+            [coms-middleware.car-state :as c-state])
   (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
            (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
-           (java.io ByteArrayOutputStream ObjectOutputStream)))
+           (java.io ByteArrayOutputStream ObjectOutputStream)
+           (coms_middleware.car_state CarState)))
 
 (defn make-socket
   ([] (new DatagramSocket))
@@ -46,9 +47,9 @@
       (go-loop []
         (if-not (:stopped @state)
           (do (.output _ (-> socket
-                                (receive-packet (:buffer-size @conf))
-                                (byte-array)
-                                (ByteBuffer/wrap)))
+                             (receive-packet (:buffer-size @conf))
+                             (byte-array)
+                             (ByteBuffer/wrap)))
               (recur))
           (.close socket)))))
   (validate [this]
@@ -96,7 +97,7 @@
 
 (defrecord DashboardSink [state name conf v-fn in]
   Sink
-  (sink [this value]
+  (sink [_ value]
     (send-packet (:socket @conf) (serialize value) (:destination-host @conf) (:destination-port @conf)))
   Step
   (init [this]
@@ -109,19 +110,24 @@
             (.sink this value)
             (recur))
           (.close socket)))))
-  (validate [this]
+  (validate [_]
     (if-let [result (v-fn @conf)]
       (throw (ex-info "Problem validating Sink conf!" result))
       (log/debug "Sink " name " validated")))
-  (getState [this] @state)
-  (stop [this]
+  (getState [_] @state)
+  (stop [_]
     (swap! state assoc :stopped true)))
 
 (defrecord StateGrinder [state name conf v-fn in out]
   Grinder
-  (grind [this value]
-    (.alterState (:car-state @conf) value)
-    (>!! out value))
+  (grind [_ value]
+    (let [^CarState car-state (:car-state @conf)
+          value (if (.setIgnition car-state value)
+                  (->> value
+                      (.setFuelLevel car-state)
+                      (.checkSpeedIncreaseDistance car-state))
+                  value)]
+      (>!! out value)))
   Step
   (init [this]
     (log/debug "Initialized Grinder " name)
@@ -131,12 +137,12 @@
         (when-let [value (<!! in)]
           (.grind this value)
           (recur)))))
-  (validate [this]
+  (validate [_]
     (if-let [result (v-fn @conf)]
       (throw (ex-info "Problem validating Grinder conf!" result))
       (log/debug "Grinder " name " validated")))
-  (getState [this] @state)
-  (stop [this]
+  (getState [_] @state)
+  (stop [_]
     (swap! state assoc :stopped true)))
 
 ;(defprotocol DashboardDataSaver

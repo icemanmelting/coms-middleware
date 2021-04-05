@@ -1,4 +1,4 @@
-(ns coms-middelware.core-test
+(ns coms-middleware.core-test
   (:require [clojure.test :refer :all]
             [clojure.core.async :refer [chan <!! >! go]]
             [coms-middelware.core :refer :all])
