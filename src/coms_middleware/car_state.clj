@@ -15,9 +15,14 @@
 
 (defrecord ICEState [trip-id ignition speed trip-distance total-distance fuel-level tyre-circumference]
   CarState
-  (setIgnition [this command]
-    (swap! ignition not))
-  (setFuelLevel [this command]
+  (setIgnition [_ command]
+    (swap! ignition
+           (fn [curr new]
+             (if-not (and curr new)
+               new
+               curr))
+           (.isIgnition command)))
+  (setFuelLevel [_ command]
     (swap! fuel-level (.getFuelLevel command))
     command)
   (checkSpeedIncreaseDistance [_ command]
