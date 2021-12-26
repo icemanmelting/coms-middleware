@@ -1,0 +1,126 @@
+[{:db/ident       :car/battery-temperature,
+  :db/doc         "the temperature of the battery (EV)",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/dashboard,
+  :db/doc         "the dashboard in use by the car",
+  :db/valueType   {:db/ident :db.type/keyword},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/fuel-level,
+  :db/doc
+  "the fuel level of the car (can also represent battery level in case of EV)",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/id,
+  :db/doc         "car unique identifier",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :car/ignition?,
+  :db/valueType   {:db/ident :db.type/boolean},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/mileage,
+  :db/doc
+  "the complete distance that the car has run through the entirety of its life",
+  :db/valueType   {:db/ident :db.type/bigdec},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/stopped?,
+  :db/valueType   {:db/ident :db.type/boolean},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car/tyre-circumference,
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :trip/end-mileage,
+  :db/doc         "the end value for the car's mileage",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :trip/id,
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :trip/maximum-speed,
+  :db/doc         "the maximum speed during the trip",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :trip/maximum-temperature,
+  :db/doc         "the maximum temperature of the car's motor/battery during the trip",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :trip/starting-mileage,
+  :db/doc         "the stat value for the car's mileage",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:cartographer/entity :car-logs,
+  :db/doc              "all information related to any car event like warnings, or critical evets like temperature too high, etc"}
+ {:db/ident       :car-logs/id,
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :car-logs/level,
+  :db/doc         "the level of the event",
+  :db/valueType   {:db/ident :db.type/keyword},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car-logs/message,
+  :db/doc         "the message that decribes the event",
+  :db/valueType   {:db/ident :db.type/string},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car-logs/trip-id,
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :car-logs/ts,
+  :db/doc         "the timestamp where the event has taken place",
+  :db/valueType   {:db/ident :db.type/instant},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:cartographer/entity :position,
+  :db/doc
+  "The position of the car in gps coordinates, at a specific moment in time"}
+ {:db/ident       :position/car-id,
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :position/created,
+  :db/doc         "the instant this point is created",
+  :db/valueType   {:db/ident :db.type/instant},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :position/id,
+  :db/doc         "the unique identifier of this position",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :position/latitude,
+  :db/valueType   {:db/ident :db.type/string},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :position/longitude,
+  :db/valueType   {:db/ident :db.type/string},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :speed-data/car-id,
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :speed-data/created,
+  :db/doc         "the instant this value was created at",
+  :db/valueType   {:db/ident :db.type/instant},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :speed-data/id,
+  :db/doc         "unique identifier",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :speed-data/speed,
+  :db/doc         "the speed value",
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :temperature-data/car-id,
+  :db/doc         "the id if the car that has had this value added",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :temperature-data/created,
+  :db/doc         "the moment this value was created at",
+  :db/valueType   {:db/ident :db.type/instant},
+  :db/cardinality {:db/ident :db.cardinality/one}}
+ {:db/ident       :temperature-data/id,
+  :db/doc         "unique identifier",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :temperature-data/temperature,
+  :db/valueType   {:db/ident :db.type/double},
+  :db/cardinality {:db/ident :db.cardinality/one}}]
