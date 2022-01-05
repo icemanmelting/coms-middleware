@@ -1,29 +1,65 @@
 (ns coms-middleware.core-test
   (:require [clojure.test :refer :all]
-            [clojure.core.async :refer [chan <!! >! go]]
-            [coms-middelware.core :refer :all])
+            [clojure.core.async :refer [timeout alts!! chan <!! >! go]]
+            [clojure-data-grinder-core.core :as c]
+            [coms-middleware.core :refer :all])
   (:import
     (java.nio ByteBuffer)
-           (pt.iceman.middleware.cars.ice ICEBased)
-           (coms_middelware.core MCUSource)
-           (java.io ByteArrayOutputStream ObjectOutputStream)))
+    (pt.iceman.middleware.cars.ice ICEBased)
+    (java.io ByteArrayOutputStream ObjectOutputStream)
+    (coms_middleware.core MCUSource)))
 
-(defonce socket (make-socket 9998))
+(defn <!!?
+  "Reads from chan synchronously, waiting for a given maximum of milliseconds.
+  If the value does not come in during that period, returns :timed-out. If
+  milliseconds is not given, a default of 1000 is used."
+  ([chan]
+   (<!!? chan 1000))
+  ([chan milliseconds]
+   (let [timeout (timeout milliseconds)
+         [value port] (alts!! [chan timeout])]
+     (if (= chan port)
+       value
+       :timed-out))))
+
+(def socket (atom nil))
+
+(defn cleaning-fixture [f]
+  (reset! socket (make-socket 9998))
+  (f)
+  (.close @socket))
+
+(use-fixtures :each cleaning-fixture)
 
 (deftest mcu-source-test
-  (let [state (atom {})
+  (let [tm (c/set-transaction-manager :mem {})
+        state (atom {:successful-source-calls   0
+                     :unsuccessful-source-calls 0
+                     :source-calls              0
+                     :stopped                   false})
         name "test-source"
-        conf (atom {:port 9999
-                    :buffer-size 14})
         out (chan)
-        ^MCUSource mcu-source (->MCUSource state name conf nil out)]
+        conf (atom {:port        9999
+                    :buffer-size 14
+                    :channels {:out {:out-channel out}}})
+        ^MCUSource mcu-source (->MCUSource state name conf)]
+
     (.init mcu-source)
-    (send-packet socket (.getBytes "this is a test") "localhost" 9999)
-    (let [value (<!! out)]
-      (is (= "this is a test" (String. (.array value)))))
+
+    (send-packet @socket (.getBytes "this is a test") "localhost" 9999)
+
+    (let [{v :value tx-id :tx-id} (<!!? out 2000)
+          tx (.getTransaction tm tx-id)
+          {pb :source-calls sb :successful-source-calls} (.getState mcu-source)]
+      (are [x y] (= x y)
+                 (ByteBuffer/wrap (.getBytes "this is a test")) v
+                 :initialized (.getStatus tx)
+                 pb 1
+                 sb 1))
+
     (.stop mcu-source)))
 
-(defn- short-to-2-bytes[^Short s]
+(defn- short-to-2-bytes [^Short s]
   (let [b1 (bit-and s 0xFF)
         b2 (bit-and (bit-shift-right s 8) 0xFF)]
     [b1 b2]))
@@ -60,18 +96,18 @@
     (.init mcu-grinder)
     (let [^ICEBased ice (<!! out)]
       (are [x y] (= x y)
-        false (.isOilPressureLow ice)
-        false (.isSparkPlugOn ice)
-        false (.isBattery12vNotCharging ice)
-        false (.isTurningSigns ice)
-        false (.isAbsAnomaly ice)
-        true (.isParkingBrakeOn ice)
-        true (.isBrakesHydraulicFluidLevelLow ice)
-        true (.isHighBeamOn ice)
-        true (.isIgnition ice)
-        50 (.getSpeed ice)
-        3000 (.getRpm ice)
-        80 (.getEngineTemperature ice)))))
+                 false (.isOilPressureLow ice)
+                 false (.isSparkPlugOn ice)
+                 false (.isBattery12vNotCharging ice)
+                 false (.isTurningSigns ice)
+                 false (.isAbsAnomaly ice)
+                 true (.isParkingBrakeOn ice)
+                 true (.isBrakesHydraulicFluidLevelLow ice)
+                 true (.isHighBeamOn ice)
+                 true (.isIgnition ice)
+                 50 (.getSpeed ice)
+                 3000 (.getRpm ice)
+                 80 (.getEngineTemperature ice)))))
 
 (deftest test-dashboard-sink
   (let [speed (short-to-2-bytes 50)
@@ -101,7 +137,7 @@
         state (atom {:stopped false})
         conf (atom {:destination-port 9998
                     :destination-host "localhost"
-                    :source-port 9999})
+                    :source-port      9999})
         in (chan)
         dashboard-sink (->DashboardSink state name conf nil in)]
     (go (>! in value))

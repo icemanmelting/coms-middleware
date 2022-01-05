@@ -30,14 +30,14 @@
           curr-speed @speed
           alter-speed? (compare-and-set! speed curr-speed rcv-speed)]
       (if alter-speed?
-        (if (> 0 speed)
+        (if (> speed 0)
           (let [distance-per-rotation (/ tyre-circumference 1000)
                 distance-traveled (* (* 0.89288 (Math/pow 1.0073 speed) distance-per-rotation))]
             (swap! trip-distance + distance-traveled)
             (swap! total-distance + distance-traveled)
             command)
           command)
-        (ICEBased. command curr-speed))))
+        (ICEBased. command))))
   (resetTripDistance [_]
     (reset! trip-distance 0))
   (newTrip [_] (compare-and-set! trip-id @trip-id (pg/uuid)))

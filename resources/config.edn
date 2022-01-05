@@ -1,0 +1,76 @@
+{:api-server #profile {:default {:port 8080}
+                       :staging {}
+                       :production {}}
+ :steps #profile {:default {:channels [{:name "mcu-import"
+                                        :buffer-size 10}]
+                            :sources [{:name "mcu-receiver"
+                                       :tx {:fail-fast? false
+                                            :clean-up-fn (fn [a b c])
+                                            :retries 1}
+                                       :conf {:port 4444
+                                              :channels {:out [{:output-channel "mcu-import"}]}}
+                                       :v-fn (fn [conf]
+                                               (when (nil? (-> conf :channels :out :out-channel))
+                                                 {:data "No out channel name found!"}))
+                                       :type coms-middleware.core/MCUSource
+                                       :threads 1}
+                                      #_{:name "fin-objects-importer"
+                                       :tx {:fail-fast? true
+                                            :clean-up-fn iacts-phoenix.core/cleanup-object
+                                            :retries 0}
+                                       :q-fn iacts-phoenix.core/load-all-by-state
+                                       :conf {:channels {:out [{:output-channel "body-interpreter"}]}
+                                              :db-name "iacts"
+                                              :db-cfg {:server-type :peer-server
+                                                       :access-key "myaccesskey"
+                                                       :secret "mysecret"
+                                                       :endpoint "172.20.0.4:8998"
+                                                       :validate-hostnames false}
+                                              :query-args [:ARRIVED]}
+                                       :poll-frequency-ms 3000
+                                       :type clojure-data-grinder-core.core/map->DatomicSource}]
+                            :grinders [{:name "file-interpreter"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:channels {:in "file-import"
+                                                          :out [{:output-channel "file-sink"}]}}
+                                        :x-fn iacts-phoenix.core/interpret-file
+                                        :poll-frequency-ms 3000
+                                        :threads 1}
+                                       {:name "body-interpreter"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:channels {:in "body-interpreter"
+                                                          :out [{:output-channel "body-translator"}]}}
+                                        :x-fn iacts-phoenix.core/json->edn
+                                        :poll-frequency-ms 3000
+                                        :threads 1}
+                                       {:name "body-translator"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:channels {:in "body-translator"
+                                                          :out [{:output-channel "file-sink"}]}}
+                                        :x-fn iacts-phoenix.core/translate-object-data
+                                        :poll-frequency-ms 3000
+                                        :threads 1}]
+                            :error-sink {:name "logger-error"
+                                         :conf {}
+                                         :x-fn (fn [_ e]
+                                                 (clojure.tools.logging/error "Error found" e))
+                                         :poll-frequency-ms 1000
+                                         :threads 1}
+                            :sinks [{:name "file-sink"
+                                     :tx {:fail-fast? true}
+                                     :conf {:channels {:in "file-sink"}
+                                            :db-name "iacts"
+                                            :db-cfg {:server-type :peer-server
+                                                     :access-key "myaccesskey"
+                                                     :secret "mysecret"
+                                                     :endpoint "172.20.0.4:8998"
+                                                     :validate-hostnames false}}
+                                     :x-fn iacts-phoenix.core/sink-value->db
+                                     :poll-frequency-ms 1000
+                                     :type clojure-data-grinder-core.core/map->DatomicSink
+                                     :threads 1}]}
+                  :staging {}
+                  :production {}}}
