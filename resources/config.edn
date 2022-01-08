@@ -36,22 +36,6 @@
                                                           :out [{:output-channel "file-sink"}]}}
                                         :x-fn iacts-phoenix.core/interpret-file
                                         :poll-frequency-ms 3000
-                                        :threads 1}
-                                       {:name "body-interpreter"
-                                        :tx {:fail-fast? false
-                                             :retries 2}
-                                        :conf {:channels {:in "body-interpreter"
-                                                          :out [{:output-channel "body-translator"}]}}
-                                        :x-fn iacts-phoenix.core/json->edn
-                                        :poll-frequency-ms 3000
-                                        :threads 1}
-                                       {:name "body-translator"
-                                        :tx {:fail-fast? false
-                                             :retries 2}
-                                        :conf {:channels {:in "body-translator"
-                                                          :out [{:output-channel "file-sink"}]}}
-                                        :x-fn iacts-phoenix.core/translate-object-data
-                                        :poll-frequency-ms 3000
                                         :threads 1}]
                             :error-sink {:name "logger-error"
                                          :conf {}
