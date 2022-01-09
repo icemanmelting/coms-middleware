@@ -3,13 +3,15 @@
             [clojure.core.async :refer [go-loop >!! chan <!! <!]]
             [clojure-data-grinder-core.core :as c]
             [clojure-data-grinder-core.validation :as v]
-            [clojure.string :as str])
-  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress SocketAddress)
+            [clojure.string :as str]
+            [coms-middleware.car-state :as c-state])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
            (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
-           (clojure.lang Symbol)))
+           (clojure.lang Symbol)
+           (coms_middleware.car_state CarState)))
 
 (defn make-socket
   ([] (new DatagramSocket))
@@ -125,7 +127,7 @@
                              :stopped false})}]
     (c/step-config->instance name impl setup)))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defmulti ^:private get-command-type (fn [type ^ByteBuffer _] type))
 
@@ -211,6 +213,58 @@
                              :unsuccessful-grinding-operations 0
                              :stopped false})}]
     [(c/step-config->instance name impl setup)]))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defrecord BaseCommandGrinder [state name conf threads poll-frequency-ms]
+  c/Grinder
+  (grind [_ value]
+    (let [^CarState car-state (-> conf deref :car-state)]
+      (if (.setIgnition car-state value)
+        (->> value
+             (.setFuelLevel car-state)
+             (.checkSpeedIncreaseDistance car-state))
+        value)))
+  c/Step
+  (init [this]
+    (let [in (-> conf deref :channels :in)
+          out-ch (-> conf deref :channels :out :output-channel)
+          fail-fast (-> conf deref :tx :fail-fast?)
+          tyre-circumference (-> conf deref :tyre-circumference)
+          car-type (-> conf deref :type)
+          car-state (doto (c-state/get-car-state car-type)
+                      (.setTyreCircumference tyre-circumference))]
+      (swap! conf assoc :car-state car-state)
+      (swap! conf assoc :scheduled-fns (mapv (fn [t]
+                                               (c/take->future-loop this
+                                                                  t
+                                                                  in
+                                                                  out-ch
+                                                                  name
+                                                                  state
+                                                                  poll-frequency-ms
+                                                                  (fn [v]
+                                                                    (c/grind this v))
+                                                                  [:grinding-operations :successful-grinding-operations]
+                                                                  fail-fast
+                                                                  [:grinding-operations :unsuccessful-grinding-operations]))
+                                             (range 0 threads)))
+      (log/info "Initialized BaseCommandGrinder " name)))
+  (validate [_]
+    (let [result (cond-> []
+                         (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
+                         (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
+                         (not (-> conf deref :type)) (conj "Does not contain vehicle type")
+                         (not (-> conf deref :tyre-circumference)) (conj "Does not contain vehicle tyre circumference"))]
+      (if (seq result)
+        (throw (ex-info "Problem validating BaseCommandGrinder conf!" {:message (str/join ", " result)}))
+        (log/debug "BaseCommandGrinder " name " validated"))))
+  (getState [_] @state)
+  (stop [_]
+    (swap! state assoc :stopped true)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn serialize
   "Serializes value, returns a byte array"
@@ -220,7 +274,7 @@
       (.writeObject dos v))
     (.toByteArray buff)))
 
-(defrecord DashboardSink [state name conf v-fn in]
+#_(defrecord DashboardSink [state name conf v-fn in]
   c/Sink
   (sink [_ value]
     (send-packet (:socket @conf) (serialize value) (:destination-host @conf) (:destination-port @conf)))
@@ -243,29 +297,4 @@
   (stop [_]
     (swap! state assoc :stopped true)))
 
-;(defrecord StateGrinder [state name conf v-fn in out]
-;  Grinder
-;  (grind [_ value]
-;    (let [^CarState car-state (:car-state @conf)
-;          value (if (.setIgnition car-state value)
-;                  (->> value
-;                       (.setFuelLevel car-state)
-;                       (.checkSpeedIncreaseDistance car-state))
-;                  value)]
-;      (>!! out value)))
-;  Step
-;  (init [this]
-;    (log/debug "Initialized Grinder " name)
-;    (swap! conf assoc :car-state (c-state/get-car-state (:type @conf)))
-;    (go-loop []
-;      (if-not (:stopped @state)
-;        (when-let [value (<!! in)]
-;          (.grind this value)
-;          (recur)))))
-;  (validate [_]
-;    (if-let [result (v-fn @conf)]
-;      (throw (ex-info "Problem validating Grinder conf!" result))
-;      (log/debug "Grinder " name " validated")))
-;  (getState [_] @state)
-;  (stop [_]
-;    (swap! state assoc :stopped true)))
+

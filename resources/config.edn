@@ -1,52 +1,65 @@
 {:api-server #profile {:default {:port 8080}
                        :staging {}
                        :production {}}
- :steps #profile {:default {:channels [{:name "mcu-import"
+ :steps #profile {:default {:channels [{:name "mcu-out-grinder"
+                                        :buffer-size 10}
+                                       {:name "basecommand-grinder"
+                                        :buffer-size 10}
+                                       {:name "basecommand-splitter"
+                                        :buffer-size 10}
+                                       {:name "ai-grinder"
+                                        :buffer-size 10}
+                                       {:name "trip-grinder"
+                                        :buffer-size 10}
+                                       {:name "datomic-sink"
                                         :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
                                        :tx {:fail-fast? false
                                             :clean-up-fn (fn [a b c])
                                             :retries 1}
                                        :conf {:port 4444
-                                              :channels {:out [{:output-channel "mcu-import"}]}}
+                                              :channels {:out [{:output-channel "mcu-out-grinder"}]}}
                                        :v-fn (fn [conf]
                                                (when (nil? (-> conf :channels :out :out-channel))
                                                  {:data "No out channel name found!"}))
                                        :type coms-middleware.core/MCUSource
-                                       :threads 1}
-                                      #_{:name "fin-objects-importer"
-                                       :tx {:fail-fast? true
-                                            :clean-up-fn iacts-phoenix.core/cleanup-object
-                                            :retries 0}
-                                       :q-fn iacts-phoenix.core/load-all-by-state
-                                       :conf {:channels {:out [{:output-channel "body-interpreter"}]}
-                                              :db-name "iacts"
-                                              :db-cfg {:server-type :peer-server
-                                                       :access-key "myaccesskey"
-                                                       :secret "mysecret"
-                                                       :endpoint "172.20.0.4:8998"
-                                                       :validate-hostnames false}
-                                              :query-args [:ARRIVED]}
-                                       :poll-frequency-ms 3000
-                                       :type clojure-data-grinder-core.core/map->DatomicSource}]
-                            :grinders [{:name "file-interpreter"
+                                       :threads 1}]
+                            :grinders [{:name "mcu-out-grinder"
                                         :tx {:fail-fast? false
                                              :retries 2}
-                                        :conf {:channels {:in "file-import"
-                                                          :out [{:output-channel "file-sink"}]}}
-                                        :x-fn iacts-phoenix.core/interpret-file
-                                        :poll-frequency-ms 3000
+                                        :conf {:type :ice
+                                               :channels {:in "mcu-out-grinder"
+                                                          :out {:output-channel "basecommand-grinder"}}}
+                                        :type coms-middleware.core/MCUOutGrinder
+                                        :poll-frequency-ms 20
+                                        :threads 1}
+                                       {:name "basecommand-grinder"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:type :ice
+                                               :channels {:in "basecommand-grinder"
+                                                          :out {:output-channel "basecommand-splitter"}}}
+                                        :type coms-middleware.core/MCUOutGrinder
+                                        :poll-frequency-ms 20
                                         :threads 1}]
+                            :splitters [{:name "basecommand-splitter"
+                                         :tx {:fail-fast? false
+                                              :clean-up-fn (fn [_ _ _])}
+                                         :conf {:channels {:in "basecommand-splitter"
+                                                           :out [{:ai-grinder "ai-grinder"}
+                                                                 {:trip-grinder "trip-grinder"}
+                                                                 {:datomic-sink "datomic-sink"}]}}
+                                         :poll-frequency-ms 1000}]
                             :error-sink {:name "logger-error"
                                          :conf {}
                                          :x-fn (fn [_ e]
                                                  (clojure.tools.logging/error "Error found" e))
                                          :poll-frequency-ms 1000
                                          :threads 1}
-                            :sinks [{:name "file-sink"
+                            :sinks [{:name "datomic-sink"
                                      :tx {:fail-fast? true}
-                                     :conf {:channels {:in "file-sink"}
-                                            :db-name "iacts"
+                                     :conf {:channels {:in "datomic-sink"}
+                                            :db-name "coms-data"
                                             :db-cfg {:server-type :peer-server
                                                      :access-key "myaccesskey"
                                                      :secret "mysecret"
