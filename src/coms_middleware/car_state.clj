@@ -1,7 +1,7 @@
 (ns coms-middleware.car-state
-  (:require [coms-middleware.postgres :as pg])
   (:import (pt.iceman.middleware.cars.ice ICEBased)
-           (java.util UUID)))
+           (java.util UUID))
+  (:gen-class))
 
 (defprotocol CarState
   (setIgnition [this command])
@@ -31,18 +31,16 @@
     (reset! tyre-circumference value))
   (checkSpeedIncreaseDistance [_ ^ICEBased command]
     (let [rcv-speed (.getSpeed command)
-          curr-speed @speed
-          alter-speed? (compare-and-set! speed curr-speed rcv-speed)]
-      (if alter-speed?
-        (if (> speed 0)
-          (let [distance-per-rotation (/ tyre-circumference 1000)
-                distance-traveled (* (* 0.89288 (Math/pow 1.0073 speed) distance-per-rotation))]
-            (swap! trip-distance + distance-traveled)
-            (swap! total-distance + distance-traveled)
-            (doto command
-              (.setTotalDistance @total-distance)))
-          command)
-        (ICEBased. command))))
+          curr-speed @speed]
+      (compare-and-set! speed curr-speed rcv-speed)
+      (if (> speed 0)
+        (let [distance-per-rotation (/ tyre-circumference 1000)
+              distance-traveled (* (* 0.89288 (Math/pow 1.0073 speed) distance-per-rotation))]
+          (swap! trip-distance + distance-traveled)
+          (swap! total-distance + distance-traveled)
+          (doto command
+            (.setTotalDistance @total-distance)))
+        command)))
   (resetTripDistance [_]
     (reset! trip-distance 0))
   (newTrip [_] (compare-and-set! trip-id @trip-id (UUID/randomUUID)))
@@ -57,6 +55,3 @@
   (->ICEState (atom (UUID/randomUUID)) (atom false) (atom 0) (atom 0) (atom 0) (atom 0) (atom 0)))
 
 (defmethod get-car-state :default [] nil)
-
-;private static final float CAR_TYRE_CIRCUNFERENCE_M = 1.81f;
-;private static final double CAR_DISTANCE_PER_ROTATION = ((CAR_TYRE_CIRCUNFERENCE_M) / (double) 1000);

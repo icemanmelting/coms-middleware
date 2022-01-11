@@ -11,7 +11,8 @@
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
-           (coms_middleware.car_state CarState)))
+           (coms_middleware.car_state CarState))
+  (:gen-class))
 
 (defn make-socket
   ([] (new DatagramSocket))
@@ -128,7 +129,6 @@
     (c/step-config->instance name impl setup)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defmulti ^:private get-command-type (fn [type ^ByteBuffer _] type))
 
 (defmethod ^:private get-command-type :ice [_ ^ByteBuffer value]
@@ -237,17 +237,17 @@
       (swap! conf assoc :car-state car-state)
       (swap! conf assoc :scheduled-fns (mapv (fn [t]
                                                (c/take->future-loop this
-                                                                  t
-                                                                  in
-                                                                  out-ch
-                                                                  name
-                                                                  state
-                                                                  poll-frequency-ms
-                                                                  (fn [v]
-                                                                    (c/grind this v))
-                                                                  [:grinding-operations :successful-grinding-operations]
-                                                                  fail-fast
-                                                                  [:grinding-operations :unsuccessful-grinding-operations]))
+                                                                    t
+                                                                    in
+                                                                    out-ch
+                                                                    name
+                                                                    state
+                                                                    poll-frequency-ms
+                                                                    (fn [v]
+                                                                      (c/grind this v))
+                                                                    [:grinding-operations :successful-grinding-operations]
+                                                                    fail-fast
+                                                                    [:grinding-operations :unsuccessful-grinding-operations]))
                                              (range 0 threads)))
       (log/info "Initialized BaseCommandGrinder " name)))
   (validate [_]
@@ -263,9 +263,7 @@
   (stop [_]
     (swap! state assoc :stopped true)))
 
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn serialize
   "Serializes value, returns a byte array"
   [v]
@@ -274,27 +272,47 @@
       (.writeObject dos v))
     (.toByteArray buff)))
 
-#_(defrecord DashboardSink [state name conf v-fn in]
+(defrecord DashboardSink [state name threads conf poll-frequency-ms]
   c/Sink
-  (sink [_ value]
-    (send-packet (:socket @conf) (serialize value) (:destination-host @conf) (:destination-port @conf)))
+  (sink [_ v]
+    (log/debug "Sinking value " v " to " name)
+    (send-packet (:socket @conf) (serialize v) (:destination-host @conf) (:destination-port @conf))
+    v)
   c/Step
-  (init [this]
-    (log/debug "Initialized Sink " name)
-    (let [socket (make-socket (:port @conf))]
-      (swap! conf assoc :socket socket)
-      (loop []
-        (if-not (:stopped @state)
-          (when-let [value (<!! in)]
-            (.sink this value)
-            (recur))
-          (.close socket)))))
   (validate [_]
-    (if-let [result (v-fn @conf)]
-      (throw (ex-info "Problem validating Sink conf!" result))
-      (log/debug "Sink " name " validated")))
+    (let [result (cond-> []
+                         (not (-> conf deref :channels :in)) (conj "Does not contain in-channel")
+                         (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
+                         (not (-> conf deref :destination-host)) (conj "Does not contain destination host")
+                         (not (-> conf deref :destination-port)) (conj "Does not contain destination port"))]
+      (if (seq result)
+        (throw (ex-info "Problem validating DashboardSink conf!" {:message (str/join ", " result)}))
+        (log/debug "DashboardSink " name " validated"))))
+  (init [this]
+    (let [in (-> conf deref :channels :in)
+          fail-fast? (-> conf deref :fail-fast?)
+          socket (make-socket (:port @conf))]
+      (swap! conf assoc :socket socket)
+      (swap! conf assoc :scheduled-fns (mapv (fn [t]
+                                               (c/take->future-loop this
+                                                                  t
+                                                                  in
+                                                                  nil
+                                                                  name
+                                                                  state
+                                                                  poll-frequency-ms
+                                                                  (fn [v]
+                                                                    (c/sink this v))
+                                                                  [:sink-operations :successful-sink-operations]
+                                                                  fail-fast?
+                                                                  [:sink-operations :unsuccessful-sink-operations]))
+                                             (range 0 threads)))
+      (log/info "Initialized DashboardSink " name)))
   (getState [_] @state)
   (stop [_]
-    (swap! state assoc :stopped true)))
-
-
+    (log/info "Stopping DashboardSink" name)
+    (doseq [f (:scheduled-fns @conf)]
+      (future-cancel f))
+    (.close (:socket @conf))
+    (swap! state #(assoc % :stopped true))
+    (log/info "Stopped DashboardSink" name)))

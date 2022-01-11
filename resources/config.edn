@@ -11,6 +11,8 @@
                                         :buffer-size 10}
                                        {:name "trip-grinder"
                                         :buffer-size 10}
+                                       {:name "dashboard-sink"
+                                        :buffer-size 10}
                                        {:name "datomic-sink"
                                         :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
@@ -49,14 +51,22 @@
                                                            :out [{:ai-grinder "ai-grinder"}
                                                                  {:trip-grinder "trip-grinder"}
                                                                  {:datomic-sink "datomic-sink"}]}}
-                                         :poll-frequency-ms 1000}]
+                                         :poll-frequency-ms 20}]
                             :error-sink {:name "logger-error"
                                          :conf {}
                                          :x-fn (fn [_ e]
                                                  (clojure.tools.logging/error "Error found" e))
                                          :poll-frequency-ms 1000
                                          :threads 1}
-                            :sinks [{:name "datomic-sink"
+                            :sinks [{:name "dashboard-sink"
+                                     :tx {:fail-fast? true}
+                                     :conf {:channels {:in "dashboard-sink"}
+                                            :destination-host "the cars host"
+                                            :destination-port "the cars port"}
+                                     :poll-frequency-ms 20
+                                     :type coms-middleware.core/DashboardSink
+                                     :threads 1}
+                                    {:name "datomic-sink"
                                      :tx {:fail-fast? true}
                                      :conf {:channels {:in "datomic-sink"}
                                             :db-name "coms-data"
