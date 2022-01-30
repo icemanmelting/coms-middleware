@@ -1,4 +1,9 @@
-[{:db/ident       :car/battery-temperature,
+[{:db/ident       :car/id,
+  :db/doc         "car unique identifier",
+  :db/valueType   {:db/ident :db.type/uuid},
+  :db/cardinality {:db/ident :db.cardinality/one},
+  :db/unique      {:db/ident :db.unique/identity}}
+ {:db/ident       :car/battery-temperature,
   :db/doc         "the temperature of the battery (EV)",
   :db/valueType   {:db/ident :db.type/double},
   :db/cardinality {:db/ident :db.cardinality/one}}
@@ -7,21 +12,14 @@
   :db/valueType   {:db/ident :db.type/keyword},
   :db/cardinality {:db/ident :db.cardinality/one}}
  {:db/ident       :car/fuel-level,
-  :db/doc
-  "the fuel level of the car (can also represent battery level in case of EV)",
+  :db/doc "the fuel level of the car (can also represent battery level in case of EV)",
   :db/valueType   {:db/ident :db.type/double},
   :db/cardinality {:db/ident :db.cardinality/one}}
- {:db/ident       :car/id,
-  :db/doc         "car unique identifier",
-  :db/valueType   {:db/ident :db.type/uuid},
-  :db/cardinality {:db/ident :db.cardinality/one},
-  :db/unique      {:db/ident :db.unique/identity}}
  {:db/ident       :car/ignition?,
   :db/valueType   {:db/ident :db.type/boolean},
   :db/cardinality {:db/ident :db.cardinality/one}}
  {:db/ident       :car/mileage,
-  :db/doc
-  "the complete distance that the car has run through the entirety of its life",
+  :db/doc "the complete distance that the car has run through the entirety of its life",
   :db/valueType   {:db/ident :db.type/bigdec},
   :db/cardinality {:db/ident :db.cardinality/one}}
  {:db/ident       :car/stopped?,
@@ -50,8 +48,6 @@
   :db/doc         "the stat value for the car's mileage",
   :db/valueType   {:db/ident :db.type/double},
   :db/cardinality {:db/ident :db.cardinality/one}}
- {:cartographer/entity :car-logs,
-  :db/doc              "all information related to any car event like warnings, or critical evets like temperature too high, etc"}
  {:db/ident       :car-logs/id,
   :db/valueType   {:db/ident :db.type/uuid},
   :db/cardinality {:db/ident :db.cardinality/one},
@@ -71,9 +67,6 @@
   :db/doc         "the timestamp where the event has taken place",
   :db/valueType   {:db/ident :db.type/instant},
   :db/cardinality {:db/ident :db.cardinality/one}}
- {:cartographer/entity :position,
-  :db/doc
-  "The position of the car in gps coordinates, at a specific moment in time"}
  {:db/ident       :position/car-id,
   :db/valueType   {:db/ident :db.type/uuid},
   :db/cardinality {:db/ident :db.cardinality/one}}

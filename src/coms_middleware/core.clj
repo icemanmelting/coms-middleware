@@ -220,11 +220,7 @@
   c/Grinder
   (grind [_ value]
     (let [^CarState car-state (-> conf deref :car-state)]
-      (if (.setIgnition car-state value)
-        (->> value
-             (.setFuelLevel car-state)
-             (.checkSpeedIncreaseDistance car-state))
-        value)))
+      (.processCommand car-state value conf)))
   c/Step
   (init [this]
     (let [in (-> conf deref :channels :in)
