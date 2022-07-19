@@ -1,14 +1,20 @@
 (ns coms-middleware.core-test
   (:require [clojure.test :refer :all]
-            [clojure.core.async :refer [timeout alts!! chan <!! >! go]]
-            [clojure-data-grinder-core.core :as c]
+            [clojure.core.async :refer [timeout alts!! thread <!!]]
+            [clojure-data-grinder-tx-manager.protocols.transaction-manager-impl :refer [set-transaction-manager]]
             [coms-middleware.core :refer :all]
-            [clojure.core.async :as async])
+            [clojure.core.async :as async]
+            [clojure-data-grinder-core.protocols.protocols :as c]
+            [clojure-data-grinder-core.protocols.impl :refer [->LocalQueue
+                                                              ->GrinderImpl
+                                                              main-channel]]
+            [clojure-data-grinder-core.common :refer [queues]]
+            [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
+            [clojure-data-grinder-tx-manager.protocols.transaction :as tx])
   (:import
     (java.nio ByteBuffer)
     (pt.iceman.middleware.cars.ice ICEBased)
-    (java.io ByteArrayOutputStream ObjectOutputStream)
-    (coms_middleware.core MCUSource MCUOutGrinder)))
+    (coms_middleware.core MCUSource)))
 
 (defn <!!?
   "Reads from chan synchronously, waiting for a given maximum of milliseconds.
@@ -23,6 +29,11 @@
        value
        :timed-out))))
 
+(defn- new-queue [name buffer-size]
+  (let [queue (->LocalQueue (atom {}) {:name name :buffer-size buffer-size})]
+    (c/init! queue)
+    queue))
+
 (def socket (atom nil))
 
 (defn cleaning-fixture [f]
@@ -33,34 +44,35 @@
 (use-fixtures :each cleaning-fixture)
 
 (deftest mcu-source-test
-  (let [tm (c/set-transaction-manager :mem {})
-        state (atom {:successful-source-calls 0
-                     :unsuccessful-source-calls 0
-                     :source-calls 0
+  (let [_ (set-transaction-manager :mem {} :local main-channel queues)
+        state (atom {:successful-step-calls 0
+                     :unsuccessful-step-calls 0
+                     :total-step-calls 0
                      :stopped false})
         name "test-source"
-        out (chan)
+        queue (new-queue "test" 1)
         conf (atom {:port 9999
                     :buffer-size 14
-                    :channels {:out {:output-channel out}}})
-        ^MCUSource mcu-source (->MCUSource state name conf 1000)]
+                    :channels {:out {:output-channel "test"}}})]
+    (with-redefs [queues (atom {"test" queue})]
+      (let [^MCUSource mcu-source (->MCUSource state name conf 1000)]
+        (.init mcu-source)
 
-    (.init mcu-source)
+        (Thread/sleep 2000)
 
-    (Thread/sleep 2000)
+        (send-packet @socket (.getBytes "this is a test") "localhost" 9999)
 
-    (send-packet @socket (.getBytes "this is a test") "localhost" 9999)
+        (let [{shard :value} (c/take! queue)
+              value (.getValue shard)
+              status (.getStatus shard)
+              {pb :total-step-calls sb :successful-step-calls} (.getState mcu-source)]
+          (are [x y] (= x y)
+                     (ByteBuffer/wrap (.getBytes "this is a test")) value
+                     :ok status
+                     pb 1
+                     sb 1))
 
-    (let [{v :value tx-id :tx-id} (<!!? out 2000)
-          tx (.getTransaction tm tx-id)
-          {pb :source-calls sb :successful-source-calls :as state} (.getState mcu-source)]
-      (are [x y] (= x y)
-                 (ByteBuffer/wrap (.getBytes "this is a test")) v
-                 :initialized (.getStatus tx)
-                 pb 1
-                 sb 1))
-
-    (.stop mcu-source)))
+        (.stop mcu-source)))))
 
 (defn- short-to-2-bytes [^Short s]
   (let [b1 (bit-and s 0xFF)
@@ -68,7 +80,18 @@
     [b1 b2]))
 
 (deftest mcu-grinder-test
-  (let [speed (short-to-2-bytes 50)
+  (let [tm (set-transaction-manager :mem {} :local main-channel queues)
+        state (atom {:successful-step-calls 0
+                     :unsuccessful-step-calls 0
+                     :total-step-calls 0
+                     :stopped false})
+        name "test-source"
+        queue (new-queue "test" 1)
+        queue2 (new-queue "test2" 1)
+        conf (atom {:type :ice
+                    :channels {:in "test"
+                               :out {:output-channel "test2"}}})
+        speed (short-to-2-bytes 50)
         temperature (short-to-2-bytes 80)
         rpm (short-to-2-bytes 3000)
         fuel (short-to-2-bytes 32)
@@ -89,47 +112,50 @@
                          (second fuel)
                          (first temperature)
                          (second temperature)])
-        buff (ByteBuffer/wrap arr)
-        state (atom {:successful-grinding-operations 0
-                     :unsuccessful-grinding-operations 0
-                     :grinding-operations 0
+        buff (ByteBuffer/wrap arr)]
+    (with-redefs [queues (atom {"test" queue
+                                "test2" queue2})]
+      (let [mcu-grinder (->MCUOutGrinder state
+                                         name
+                                         1
+                                         conf
+                                         500)
+            tx (tx-mng/startTx tm conf)
+            shard (tx/addShard tx buff "test" :ok)]
+        (c/put! queue shard)
+
+        (.init mcu-grinder)
+
+        (Thread/sleep 1000)
+
+        (let [{shard :value} (c/take! queue2)
+              ice (.getValue shard)]
+          (are [x y] (= x y)
+                     false (.isOilPressureLow ice)
+                     true (.isSparkPlugOn ice)
+                     false (.isBattery12vNotCharging ice)
+                     true (.isTurningSigns ice)
+                     true (.isAbsAnomaly ice)
+                     false (.isParkingBrakeOn ice)
+                     false (.isBrakesHydraulicFluidLevelLow ice)
+                     false (.isHighBeamOn ice)
+                     true (.isIgnition ice)
+                     50 (.getSpeed ice)
+                     3000 (.getRpmAnalogLevel ice)
+                     32 (.getFuelAnalogLevel ice)
+                     80 (.getEngineTemperatureAnalogLevel ice)))
+
+        (.stop mcu-grinder)))))
+
+(deftest test-dashboard-sink
+  (let [tm (set-transaction-manager :mem {} :local main-channel queues)
+        state (atom {:successful-step-calls 0
+                     :unsuccessful-step-calls 0
+                     :total-step-calls 0
                      :stopped false})
-        in (chan 1)
-        out (chan 1)
-        conf (atom {:type :ice
-                    :channels {:in in
-                               :out {:output-channel out}}})
-        ^MCUOutGrinder mcu-grinder (->MCUOutGrinder state "test" 1 conf 1000)
-        tm (c/set-transaction-manager :mem {})
-        tx (c/initiate-tx mcu-grinder (atom {}))]
-
-
-    (async/>!! in {:value buff
-                   :tx-id (.getId tx)})
-
-    (.init mcu-grinder)
-
-    (Thread/sleep 3000)
-
-    (let [{^ICEBased ice :value tx-id :tx-id} (<!!? out 2000)]
-      (are [x y] (= x y)
-                 false (.isOilPressureLow ice)
-                 true (.isSparkPlugOn ice)
-                 false (.isBattery12vNotCharging ice)
-                 true (.isTurningSigns ice)
-                 true (.isAbsAnomaly ice)
-                 false (.isParkingBrakeOn ice)
-                 false (.isBrakesHydraulicFluidLevelLow ice)
-                 false (.isHighBeamOn ice)
-                 true (.isIgnition ice)
-                 50 (.getSpeed ice)
-                 3000 (.getRpm ice)
-                 80 (.getEngineTemperature ice)))
-
-    (.stop mcu-grinder)))
-
-#_(deftest test-dashboard-sink
-  (let [speed (short-to-2-bytes 50)
+        name "test-source"
+        queue (new-queue "test" 1)
+        speed (short-to-2-bytes 50)
         temperature (short-to-2-bytes 80)
         rpm (short-to-2-bytes 3000)
         fuel (short-to-2-bytes 32)
@@ -153,15 +179,26 @@
         buff (ByteBuffer/wrap arr)
         value (ICEBased. buff)
         expected (serialize value)
-        state (atom {:stopped false})
-        conf (atom {:destination-port 9998
+        conf (atom {:type :ice
+                    :channels {:in "test"}
+                    :destination-port 9998
                     :destination-host "localhost"
-                    :source-port 9999})
-        in (chan)
-        dashboard-sink (->DashboardSink state name conf nil in)]
-    (go (>! in value))
-    (.init dashboard-sink)
-    (let [result (-> socket
-                     (receive-packet (alength expected))
-                     (byte-array))]
-      (is (= (seq expected) (seq result))))))
+                    :source-port 9999})]
+    (with-redefs [queues (atom {"test" queue})]
+      (let [dashboard-sink (->DashboardSink state name 1 conf 1000)
+            tx (tx-mng/startTx tm conf)
+            shard (tx/addShard tx value "test" :ok)
+            res (thread (-> socket
+                            deref
+                            (receive-packet (alength expected))
+                            (byte-array)))]
+        (c/put! queue shard)
+
+        (.init dashboard-sink)
+
+        (Thread/sleep 3000)
+
+        (let [result (<!! res)]
+          (is (= (seq expected) (seq result)))
+
+          (.stop dashboard-sink))))))
