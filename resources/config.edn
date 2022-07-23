@@ -7,13 +7,15 @@
                                         :buffer-size 10}
                                        {:name "basecommand-splitter"
                                         :buffer-size 10}
-                                       {:name "ai-grinder"
+                                       #_{:name "ai-grinder"
                                         :buffer-size 10}
                                        {:name "trip-grinder"
                                         :buffer-size 10}
                                        {:name "dashboard-sink"
                                         :buffer-size 10}
-                                       {:name "datomic-sink"
+                                       {:name "jdbc-sink"
+                                        :buffer-size 10}
+                                       #_{:name "datomic-sink"
                                         :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
                                        :tx {:fail-fast? false

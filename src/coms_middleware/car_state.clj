@@ -14,6 +14,9 @@
   (getTripDistance [this])
   (getTotalDistance [this])
   (getFuelLevel [this])
+  (getRpm [this])
+  (getSpeed [this])
+  (getTemperature [this])
   (processCommand [this command conf]))
 
 (defn avg [ar] (/ (reduce + ar) (count ar)))
@@ -85,20 +88,22 @@
           curr-speed @speed]
       (compare-and-set! speed curr-speed rcv-speed)
       (if (> @speed 0)
-        (let [distance-per-rotation (/ tyre-circumference 1000)
+        (let [distance-per-rotation (/ @tyre-circumference 1000)
               distance-traveled (* (* 0.89288 (Math/pow 1.0073 @speed) distance-per-rotation))]
           (swap! trip-distance + distance-traveled)
           (swap! total-distance + distance-traveled)
           (doto command
             (.setTotalDistance @total-distance)))
         command)))
-  (resetTripDistance [_]
-    (reset! trip-distance 0))
+  (resetTripDistance [_] (reset! trip-distance 0))
   (newTrip [_] (compare-and-set! trip-id @trip-id (UUID/randomUUID)))
   (started? [_] (and @ignition (> @rpm 0)))
   (getTripDistance [_] @trip-distance)
   (getTotalDistance [_] @total-distance)
   (getFuelLevel [_] @fuel-level)
+  (getTemperature [_] @temperature)
+  (getRpm [_] @rpm)
+  (getSpeed [_] @speed)
   (processCommand [this value conf]
     (let [fuel-analog-level (.getFuelAnalogLevel value)
           fuel (get-fuel fuel-analog-level)
@@ -120,7 +125,7 @@
 
 (defmulti get-car-state (fn [type] type))
 
-(defmethod get-car-state :ice []
+(defmethod get-car-state :ice [_]
   (->ICEState (atom (UUID/randomUUID))
               (atom 0)
               (atom 0)
@@ -131,4 +136,4 @@
               (atom 0)
               (atom 0)))
 
-(defmethod get-car-state :default [] nil)
+(defmethod get-car-state :default [_] nil)

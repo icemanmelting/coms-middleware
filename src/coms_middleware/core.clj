@@ -1,20 +1,21 @@
 (ns coms-middleware.core
   (:require [clojure.tools.logging :as log]
-            [clojure.core.async :refer [go-loop >!! chan <!! <!]]
             [clojure-data-grinder-core.protocols.protocols :as c]
             [clojure-data-grinder-core.protocols.impl :as impl]
             [clojure-data-grinder-core.common :as common]
             [clojure-data-grinder-core.validation :as v]
             [clojure.string :as str]
             [coms-middleware.car-state :as c-state]
-            [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard])
-  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
+            [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard]
+            [clojure.core.async.impl.concurrent :as conc])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress SocketAddress)
            (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
-           (coms_middleware.car_state CarState))
+           (coms_middleware.car_state CarState)
+           (java.util.concurrent Executors))
   (:gen-class))
 
 (defn make-socket
@@ -47,42 +48,45 @@
   (init [this]
     (let [out-ch (-> conf deref :channels :out :output-channel)
           port (-> conf deref :port)
+          executor (Executors/newScheduledThreadPool 1
+                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
           socket (make-socket port)]
-      (swap! conf assoc :socket socket)
-      (swap! conf #(assoc % :scheduled-fns (impl/start-loop this
-                                                            1
-                                                            out-ch
-                                                            name
-                                                            state
-                                                            poll-frequency-ms
-                                                            (fn []
-                                                              (log/debug "Calling out MCUSource" name)
-                                                              (-> socket
-                                                                  (receive-packet (:buffer-size @conf))
-                                                                  (byte-array)
-                                                                  (ByteBuffer/wrap)))
-                                                            [:successful-step-calls :total-step-calls]
-                                                            [:unsuccessful-step-calls :total-step-calls])))
+      (swap! conf assoc
+             :socket socket
+             :scheduled-fns [(impl/start-loop this
+                                             executor
+                                             1
+                                             out-ch
+                                             name
+                                             state
+                                             poll-frequency-ms
+                                             (fn []
+                                               (log/debug "Calling out MCUSource" name)
+                                               (-> socket
+                                                   (receive-packet (:buffer-size @conf))
+                                                   (byte-array)
+                                                   (ByteBuffer/wrap)))
+                                             [:successful-step-calls :total-step-calls]
+                                             [:unsuccessful-step-calls :total-step-calls])]
+             :executor executor)
+
       (log/info "Initialized MCUSource " name)))
-  (validate [this]
+  (validate [_]
     (let [result (cond-> []
+                   (not (-> conf deref :port)) (conj "No listening port configured")
                    (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
                    (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
                    (not (-> conf deref :tx :clean-up-fn)) (conj "Does not contain cleanup function"))]
       (if (seq result)
         (throw (ex-info "Problem validating MCUSource conf!" {:message (str/join ", " result)}))
         (log/debug "Source " name " validated"))))
-  (getState [this] @state)
+  (getState [_] @state)
   (getConf [_] @conf)
   (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (isHighThroughput [_] (true? (-> @conf :high-throughput?)))
-  (stop [this]
+  (stop [_]
     (log/info "Stopping MCUSource" name)
-    (doseq [f (:scheduled-fns @conf)]
-      (when f
-        (future-cancel f)))
+    (impl/stop-common-step state conf)
     (.close (:socket @conf))
-    (swap! state #(assoc % :stopped true))
     (log/info "Stopped MCUSource" name)))
 
 (def ^:private mcu-source-impl-fmt {:state v/atomic
@@ -143,20 +147,25 @@
   c/Step
   (init [this]
     (let [in (-> conf deref :channels :in)
-          out-ch (-> conf deref :channels :out :output-channel)]
-      (swap! conf assoc :scheduled-fns (impl/start-take-loop this
-                                                             threads
-                                                             in
-                                                             out-ch
-                                                             name
-                                                             state
-                                                             poll-frequency-ms
-                                                             (fn [shard]
-                                                               (c/grind this shard))
-                                                             [:total-step-calls :successful-step-calls]
-                                                             [:total-step-calls :unsuccessful-step-calls]))
+          out-ch (-> conf deref :channels :out :output-channel)
+          executor (Executors/newScheduledThreadPool threads
+                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
+      (swap! conf assoc
+             :scheduled-fns [(impl/start-take-loop this
+                                                  executor
+                                                  threads
+                                                  in
+                                                  out-ch
+                                                  name
+                                                  state
+                                                  poll-frequency-ms
+                                                  (fn [shard]
+                                                    (c/grind this shard))
+                                                  [:total-step-calls :successful-step-calls]
+                                                  [:total-step-calls :unsuccessful-step-calls])]
+             :executor executor)
       (log/info "Initialized MCUOutGrinder " name)))
-  (validate [this]
+  (validate [_]
     (let [result (cond-> []
                    (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
                    (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
@@ -164,16 +173,12 @@
       (if (seq result)
         (throw (ex-info "Problem validating MCUOutGrinder conf!" {:message (str/join ", " result)}))
         (log/debug "MCUOutGrinder " name " validated"))))
-  (getState [this] @state)
+  (getState [_] @state)
   (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (isHighThroughput [_] (true? (-> @conf :high-throughput?)))
   (getConf [_] @conf)
-  (stop [this]
+  (stop [_]
     (log/info "Stopping MCUOutGrinder" name)
-    (doseq [f (:scheduled-fns @conf)]
-      (when f
-        (future-cancel f)))
-    (swap! state #(assoc % :stopped true))
+    (impl/stop-common-step state conf)
     (log/info "Stopped MCUOutGrinder" name)))
 
 (def ^:private mcu-grinder-impl-fmt {:state v/atomic
@@ -219,31 +224,39 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defrecord BaseCommandGrinder [state name conf threads poll-frequency-ms]
+(defrecord BaseCommandGrinder [state name threads conf poll-frequency-ms]
   c/Grinder
-  (grind [_ value]
-    (let [^CarState car-state (-> conf deref :car-state)]
-      (.processCommand car-state value conf)))
+  (grind [_ shard]
+    (let [v (tx-shard/getValue shard)]
+      (log/debug "Grinding value " v " on Grinder " name)
+      (let [^CarState car-state (c/getStateValue @impl/global-state-manager :car-state)]
+        (tx-shard/updateValue shard (.processCommand car-state v conf)))
+      shard))
   c/Step
   (init [this]
     (let [in (-> conf deref :channels :in)
           out-ch (-> conf deref :channels :out :output-channel)
+          executor (Executors/newScheduledThreadPool threads
+                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
           tyre-circumference (-> conf deref :tyre-circumference)
           car-type (-> conf deref :type)
           car-state (doto (c-state/get-car-state car-type)
                       (.setTyreCircumference tyre-circumference))]
-      (swap! conf assoc :car-state car-state)
-      (swap! conf assoc :scheduled-fns (impl/start-take-loop this
-                                                             threads
-                                                             in
-                                                             out-ch
-                                                             name
-                                                             state
-                                                             poll-frequency-ms
-                                                             (fn [shard]
-                                                               (c/grind this shard))
-                                                             [:total-step-calls :successful-step-calls]
-                                                             [:total-step-calls :unsuccessful-step-calls]))
+      (c/alterStateValue @impl/global-state-manager :car-state car-state)
+      (swap! conf assoc
+             :scheduled-fns [(impl/start-take-loop this
+                                                  executor
+                                                  threads
+                                                  in
+                                                  out-ch
+                                                  name
+                                                  state
+                                                  poll-frequency-ms
+                                                  (fn [shard]
+                                                    (c/grind this shard))
+                                                  [:total-step-calls :successful-step-calls]
+                                                  [:total-step-calls :unsuccessful-step-calls])]
+             :executor executor)
       (log/info "Initialized BaseCommandGrinder " name)))
   (validate [_]
     (let [result (cond-> []
@@ -255,8 +268,53 @@
         (throw (ex-info "Problem validating BaseCommandGrinder conf!" {:message (str/join ", " result)}))
         (log/debug "BaseCommandGrinder " name " validated"))))
   (getState [_] @state)
+  (isFailFast [_ _] (-> @conf :tx :fail-fast?))
+  (getConf [_] @conf)
   (stop [_]
-    (swap! state assoc :stopped true)))
+    (log/info "Stopping BaseCommandGrinder" name)
+    (impl/stop-common-step state conf)
+    (log/info "Stopped BaseCommandGrinder" name)))
+
+(def ^:private basecommand-grinder-impl-fmt {:state v/atomic
+                                             :name v/non-empty-str
+                                             :conf v/atomic
+                                             :v-fn v/not-nil
+                                             :x-fn v/not-nil
+                                             :threads v/numeric
+                                             :poll-frequency-ms v/numeric})
+
+(defmethod impl/validate-step-setup "coms-middleware.core/map->BaseCommandGrinder" [_ setup]
+  (let [[_ err] (v/validate basecommand-grinder-impl-fmt setup)]
+    (when err
+      (throw (ex-info "Problem validating BaseCommandGrinder" {:message (v/humanize-error err)})))))
+
+(defmethod impl/bootstrap-step "coms-middleware.core/map->BaseCommandGrinder"
+  [impl {name :name
+         conf :conf
+         tx :tx
+         ^Symbol v-fn :v-fn
+         ^Symbol x-fn :x-fn
+         pf :poll-frequency-ms
+         threads :threads}]
+  (let [conf (assoc conf :tx tx)
+        [v-fn x-fn] (common/resolve-all-functions v-fn x-fn)
+        v-fn (or v-fn (fn [_] nil))
+        setup {:v-fn v-fn
+               :x-fn x-fn
+               :poll-frequency-ms pf
+               :name name
+               :conf conf
+               :threads threads
+               :state (atom {:total-step-calls 0
+                             :successful-step-calls 0
+                             :unsuccessful-step-calls 0
+                             :stopped false})}]
+    [(impl/step-config->instance name impl setup)]))
+
+(extend BaseCommandGrinder c/Dispatcher impl/default-dispatcher-implementation)
+(extend BaseCommandGrinder c/TxPurifier impl/default-tx-purifier-implementation)
+(extend BaseCommandGrinder c/Taker impl/common-taker-implementation)
+(extend BaseCommandGrinder c/Outputter impl/common-outputter-implementation)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn serialize
@@ -286,10 +344,14 @@
         (log/debug "DashboardSink " name " validated"))))
   (init [this]
     (let [in (-> conf deref :channels :in)
+          executor (Executors/newScheduledThreadPool threads
+                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
           socket (make-socket (:source-port @conf))]
       (swap! conf
-             assoc :socket socket
-             :scheduled-fns (impl/start-take-loop this
+             assoc
+             :socket socket
+             :scheduled-fns [(impl/start-take-loop this
+                                                  executor
                                                   threads
                                                   in
                                                   nil
@@ -299,18 +361,16 @@
                                                   (fn [shard]
                                                     (c/sink this shard))
                                                   [:total-step-calls :successful-step-calls]
-                                                  [:total-step-calls :unsuccessful-step-calls]))
+                                                  [:total-step-calls :unsuccessful-step-calls])]
+             :executor executor)
       (log/info "Initialized DashboardSink " name)))
   (getState [_] @state)
   (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (isHighThroughput [_] (true? (-> @conf :high-throughput?)))
   (getConf [_] @conf)
   (stop [_]
     (log/info "Stopping DashboardSink" name)
-    (doseq [f (:scheduled-fns @conf)]
-      (future-cancel f))
+    (impl/stop-common-step state conf)
     (.close (:socket @conf))
-    (swap! state #(assoc % :stopped true))
     (log/info "Stopped DashboardSink" name)))
 
 (def ^:private mcu-sink-fmt {:state v/atomic

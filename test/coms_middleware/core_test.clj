@@ -10,7 +10,8 @@
                                                               main-channel]]
             [clojure-data-grinder-core.common :refer [queues]]
             [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
-            [clojure-data-grinder-tx-manager.protocols.transaction :as tx])
+            [clojure-data-grinder-tx-manager.protocols.transaction :as tx]
+            [clojure-data-grinder-core.protocols.impl :as impl])
   (:import
     (java.nio ByteBuffer)
     (pt.iceman.middleware.cars.ice ICEBased)
@@ -146,6 +147,72 @@
                      80 (.getEngineTemperatureAnalogLevel ice)))
 
         (.stop mcu-grinder)))))
+
+(deftest test-basecommand-grinder
+  (let [tm (set-transaction-manager :mem {} :local main-channel queues)
+        gsm (impl/set-global-state-manager :mem nil)
+        state (atom {:successful-step-calls 0
+                     :unsuccessful-step-calls 0
+                     :total-step-calls 0
+                     :stopped false})
+        name "test-source"
+        queue (new-queue "test" 1)
+        queue2 (new-queue "test2" 1)
+        speed (short-to-2-bytes 50)
+        temperature (short-to-2-bytes 80)
+        rpm (short-to-2-bytes 3000)
+        fuel (short-to-2-bytes 32)
+        arr (byte-array [0x00
+                         0xFF
+                         0xFF
+                         0x00
+                         0x00
+                         0xFF
+                         0xFF
+                         (first speed)
+                         (second speed)
+                         0x00
+                         0x00
+                         (first rpm)
+                         (second rpm)
+                         (first fuel)
+                         (second fuel)
+                         (first temperature)
+                         (second temperature)])
+        buff (ByteBuffer/wrap arr)
+        value (ICEBased. buff)
+        expected (serialize value)
+        conf (atom {:type :ice
+                    :tyre-circumference 3.14
+                    :idle-rpm 738
+                    :idle-rpm-freq 40
+                    :channels {:in "test"
+                               :out {:output-channel "test2"}}
+                    :destination-port 9998
+                    :destination-host "localhost"
+                    :source-port 9999})]
+    (with-redefs [queues (atom {"test" queue
+                                "test2" queue2})]
+      (let [base-command-grinder (->BaseCommandGrinder state name 1 conf 1000)
+            tx (tx-mng/startTx tm conf)
+            shard (tx/addShard tx value "test" :ok)]
+        (c/put! queue shard)
+
+        (.init base-command-grinder)
+
+        (Thread/sleep 3000)
+
+        (let [_ (c/take! queue2)
+              st (c/getStateValue gsm :car-state)]
+          (are [x y] (= x y)
+                     0.004033336352993614 (.getTripDistance st)
+                     0.004033336352993614 (.getTotalDistance st)
+                     50 (.getSpeed st)
+                     55350 (.getRpm st)
+                     66.83039949173809 (.getTemperature st)
+                     47.48561277403496 (.getFuelLevel st))
+
+          (.stop base-command-grinder))))))
 
 (deftest test-dashboard-sink
   (let [tm (set-transaction-manager :mem {} :local main-channel queues)
