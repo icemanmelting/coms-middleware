@@ -8,7 +8,7 @@
                                        {:name "basecommand-splitter"
                                         :buffer-size 10}
                                        #_{:name "ai-grinder"
-                                        :buffer-size 10}
+                                          :buffer-size 10}
                                        {:name "trip-grinder"
                                         :buffer-size 10}
                                        {:name "dashboard-sink"
@@ -16,7 +16,7 @@
                                        {:name "jdbc-sink"
                                         :buffer-size 10}
                                        #_{:name "datomic-sink"
-                                        :buffer-size 10}]
+                                          :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
                                        :tx {:fail-fast? false
                                             :clean-up-fn (fn [a b c])
@@ -68,18 +68,20 @@
                                      :poll-frequency-ms 20
                                      :type coms-middleware.core/DashboardSink
                                      :threads 1}
-                                    {:name "datomic-sink"
+                                    {:name "jdbc-sink"
                                      :tx {:fail-fast? true}
-                                     :conf {:channels {:in "datomic-sink"}
-                                            :db-name "coms-data"
-                                            :db-cfg {:server-type :peer-server
-                                                     :access-key "myaccesskey"
-                                                     :secret "mysecret"
-                                                     :endpoint "172.20.0.4:8998"
-                                                     :validate-hostnames false}}
-                                     :x-fn iacts-phoenix.core/sink-value->db
-                                     :poll-frequency-ms 1000
-                                     :type clojure-data-grinder-core.core/map->DatomicSink
-                                     :threads 1}]}
+                                     :conf {:channels {:in "jdbc-sink"}
+                                            :car-id "the-car-id"
+                                            :db-name "twitter"
+                                            :db-cfg {:dbtype "postgres"
+                                                     :dbname "test"
+                                                     :host "127.0.0.1"
+                                                     :port 5432
+                                                     :user "postgres"
+                                                     :password "postgres"}}
+                                     :x-fn twitter-hashtag-counter.core/insert-objects-sql
+                                     :type clojure-data-grinder-core.protocols.impl/map->JDBCSink
+                                     :poll-frequency-ms 1
+                                     :threads 4}]}
                   :staging {}
                   :production {}}}

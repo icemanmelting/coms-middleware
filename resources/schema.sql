@@ -1,26 +1,25 @@
-DROP TABLE IF EXISTS users CASCADE;
-CREATE TABLE users (
-                       login VARCHAR(128),
-                       password CHAR(64),
-                       salt VARCHAR(64),
-
-                       PRIMARY KEY (login)
-);
-
-DROP TABLE IF EXISTS sessions CASCADE;
-CREATE TABLE sessions (
-                          id UUID,
-                          login VARCHAR(128) NOT NULL,
-                          seen TIMESTAMP NOT NULL,
-
-                          PRIMARY KEY (id),
-                          FOREIGN KEY (login) REFERENCES users (login)
-);
+-- DROP TABLE IF EXISTS users CASCADE;
+-- CREATE TABLE users (
+--                        login VARCHAR(128),
+--                        password CHAR(64),
+--                        salt VARCHAR(64),
+--
+--                        PRIMARY KEY (login)
+-- );
+--
+-- DROP TABLE IF EXISTS sessions CASCADE;
+-- CREATE TABLE sessions (
+--                           id UUID,
+--                           login VARCHAR(128) NOT NULL,
+--                           seen TIMESTAMP NOT NULL,
+--
+--                           PRIMARY KEY (id),
+--                           FOREIGN KEY (login) REFERENCES users (login)
+-- );
 
 DROP TABLE IF EXISTS cars CASCADE;
 CREATE TABLE IF NOT EXISTS cars (
-                                    id UUID,
-                                    owner VARCHAR(128),
+    id UUID,
     constant_kilometers DOUBLE PRECISION,
     trip_kilometers DOUBLE PRECISION,
     trip_initial_fuel_level DOUBLE PRECISION,
@@ -29,8 +28,8 @@ CREATE TABLE IF NOT EXISTS cars (
     tyre_offset DOUBLE PRECISION,
     next_oil_change DOUBLE PRECISION,
 
-    PRIMARY KEY (id),
-    FOREIGN KEY (owner) REFERENCES users (login)
+    PRIMARY KEY (id)
+--     FOREIGN KEY (owner) REFERENCES users (login)
     );
 
 DROP TABLE IF EXISTS car_trips CASCADE;

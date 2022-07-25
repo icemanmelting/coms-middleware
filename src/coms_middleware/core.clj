@@ -7,8 +7,9 @@
             [clojure.string :as str]
             [coms-middleware.car-state :as c-state]
             [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard]
-            [clojure.core.async.impl.concurrent :as conc])
-  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress SocketAddress)
+            [clojure.core.async.impl.concurrent :as conc]
+            [next.jdbc.sql :as jdbc-sql])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
            (java.nio ByteBuffer)
            (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
@@ -413,3 +414,30 @@
 (extend DashboardSink c/TxPurifier impl/default-tx-purifier-implementation)
 (extend DashboardSink c/Taker impl/common-taker-implementation)
 (extend DashboardSink c/Outputter impl/common-outputter-implementation)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;CREATE TABLE IF NOT EXISTS cars (
+;                                  id UUID,
+;                                     constant_kilometers DOUBLE PRECISION,
+;                                     trip_kilometers DOUBLE PRECISION,
+;                                     trip_initial_fuel_level DOUBLE PRECISION,
+;                                     average_fuel_consumption DOUBLE PRECISION,
+;                                     dashboard_type TEXT,
+;                                     tyre_offset DOUBLE PRECISION,
+;                                     next_oil_change DOUBLE PRECISION,
+;
+;                                     PRIMARY KEY (id)
+;                                     --     FOREIGN KEY (owner) REFERENCES users (login)
+;                                     );
+(defn- command->update-km [command]
+  {:constant_kilometers (.getTotalDistance command)
+   :trip_kilometers (.getTripDistance command)})
+
+(defn add-to-db [conf obj]
+  (jdbc-sql/update! (:conn conf)
+                    :cars
+                    (command->update-km obj)
+                    ["id=?" (:car-id conf)]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

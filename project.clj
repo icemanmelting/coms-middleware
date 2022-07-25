@@ -9,7 +9,7 @@
                  [org.clojars.sn0wf1eld/clojure-message-broker-client "0.1.1" :scope "provided"]
                  [org.clojure/tools.logging "1.2.4" :scope "provided"]
                  [pt.iceman/comms-common "1.0-SNAPSHOT"]
-                 [com.layerware/hugsql "0.5.3"]
+                 [com.github.seancorfield/next.jdbc "1.2.780" :scope "provided"]
                  [clj-time "0.15.2" :scope "provided"]
                  [compojure "1.6.3" :exclusions [clj-time] :scope "provided"]
                  [ring/ring-json "0.5.1" :exclusions [clj-time] :scope "provided"]
