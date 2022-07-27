@@ -1,75 +1,69 @@
 {:api-server #profile {:default {:port 8080}
                        :staging {}
                        :production {}}
- :steps #profile {:default {:channels [{:name "mcu-out-grinder"
+ :steps #profile {:default {:tx-manager {:type :mem
+                                         :conf {:file "path-to-transactions-file"}}
+                            :global-state-manager {:type :mem
+                                                   :conf {}}
+                            :processing-type :local
+                            :queues [{:name "mcu-out-grinder"
                                         :buffer-size 10}
                                        {:name "basecommand-grinder"
                                         :buffer-size 10}
-                                       {:name "basecommand-splitter"
-                                        :buffer-size 10}
-                                       #_{:name "ai-grinder"
-                                          :buffer-size 10}
-                                       {:name "trip-grinder"
+                                       {:name "basecommand-demuxer"
                                         :buffer-size 10}
                                        {:name "dashboard-sink"
                                         :buffer-size 10}
                                        {:name "jdbc-sink"
-                                        :buffer-size 10}
-                                       #_{:name "datomic-sink"
-                                          :buffer-size 10}]
+                                        :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
-                                       :tx {:fail-fast? false
-                                            :clean-up-fn (fn [a b c])
-                                            :retries 1}
+                                       :tx {:fail-fast? true
+                                            :clean-up-fn (fn [_ _])}
                                        :conf {:port 4444
                                               :channels {:out [{:output-channel "mcu-out-grinder"}]}}
-                                       :v-fn (fn [conf]
-                                               (when (nil? (-> conf :channels :out :out-channel))
-                                                 {:data "No out channel name found!"}))
                                        :type coms-middleware.core/MCUSource
                                        :threads 1}]
-                            :grinders [{:name "mcu-out-grinder"
+                            :grinders [{:name "basecommand-grinder"
                                         :tx {:fail-fast? false
+                                             :clean-up-fn (fn [_ _])
                                              :retries 2}
-                                        :conf {:type :ice
-                                               :channels {:in "mcu-out-grinder"
-                                                          :out {:output-channel "basecommand-grinder"}}}
-                                        :type coms-middleware.core/MCUOutGrinder
-                                        :poll-frequency-ms 20
-                                        :threads 1}
-                                       {:name "basecommand-grinder"
-                                        :tx {:fail-fast? false
-                                             :retries 2}
+                                        :db-cfg {:dbtype "postgres"
+                                                 :dbname "test"
+                                                 :host "127.0.0.1"
+                                                 :port 5432
+                                                 :user "postgres"
+                                                 :password "postgres"}
                                         :conf {:type :ice
                                                :channels {:in "basecommand-grinder"
-                                                          :out {:output-channel "basecommand-splitter"}}}
+                                                          :out {:output-channel "basecommand-demuxer"}}}
                                         :type coms-middleware.core/MCUOutGrinder
-                                        :poll-frequency-ms 20
+                                        :poll-frequency-ms 1
                                         :threads 1}]
-                            :splitters [{:name "basecommand-splitter"
-                                         :tx {:fail-fast? false
-                                              :clean-up-fn (fn [_ _ _])}
-                                         :conf {:channels {:in "basecommand-splitter"
-                                                           :out [{:ai-grinder "ai-grinder"}
-                                                                 {:trip-grinder "trip-grinder"}
-                                                                 {:datomic-sink "datomic-sink"}]}}
-                                         :poll-frequency-ms 20}]
+                            :demuxers [{:name "basecommand-splitter"
+                                        :tx {:fail-fast? false
+                                             :clean-up-fn (fn [_ _ _])
+                                             :retries 1}
+                                        :conf {:channels {:in "basecommand-splitter"
+                                                          :out {:trip-grinder "jdbc-sink"
+                                                                :datomic-sink "dashboard-sink"}}}
+                                        :poll-frequency-ms 1}]
                             :error-sink {:name "logger-error"
                                          :conf {}
-                                         :x-fn (fn [_ e]
-                                                 (clojure.tools.logging/error "Error found" e))
-                                         :poll-frequency-ms 1000
+                                         :x-fn (fn [_ e] (clojure.tools.logging/error "Error found" e))
+                                         :poll-frequency-ms 500
                                          :threads 1}
                             :sinks [{:name "dashboard-sink"
-                                     :tx {:fail-fast? true}
+                                     :tx {:fail-fast? false
+                                          :clean-up-fn (fn [_ _ _])}
                                      :conf {:channels {:in "dashboard-sink"}
                                             :destination-host "the cars host"
                                             :destination-port "the cars port"}
-                                     :poll-frequency-ms 20
+                                     :poll-frequency-ms 1
                                      :type coms-middleware.core/DashboardSink
                                      :threads 1}
                                     {:name "jdbc-sink"
-                                     :tx {:fail-fast? true}
+                                     :tx {:fail-fast? true
+                                          :clean-up-fn (fn [_ _ _])}
                                      :conf {:channels {:in "jdbc-sink"}
                                             :car-id "the-car-id"
                                             :db-name "twitter"

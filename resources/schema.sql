@@ -23,10 +23,7 @@ CREATE TABLE IF NOT EXISTS cars (
     constant_kilometers DOUBLE PRECISION,
     trip_kilometers DOUBLE PRECISION,
     trip_initial_fuel_level DOUBLE PRECISION,
-    average_fuel_consumption DOUBLE PRECISION,
-    dashboard_type TEXT,
     tyre_offset DOUBLE PRECISION,
-    next_oil_change DOUBLE PRECISION,
 
     PRIMARY KEY (id)
 --     FOREIGN KEY (owner) REFERENCES users (login)

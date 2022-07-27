@@ -2,20 +2,31 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :refer [timeout alts!! thread <!!]]
             [clojure-data-grinder-tx-manager.protocols.transaction-manager-impl :refer [set-transaction-manager]]
-            [coms-middleware.core :refer :all]
-            [clojure.core.async :as async]
+            [coms-middleware.core :refer [make-socket
+                                          serialize
+                                          send-packet
+                                          receive-packet
+                                          ->MCUSource
+                                          ->BaseCommandGrinder
+                                          ->DashboardSink]]
+            [coms-middleware.comm-protocol-interpreter :as interpreter]
             [clojure-data-grinder-core.protocols.protocols :as c]
             [clojure-data-grinder-core.protocols.impl :refer [->LocalQueue
-                                                              ->GrinderImpl
                                                               main-channel]]
             [clojure-data-grinder-core.common :refer [queues]]
             [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
             [clojure-data-grinder-tx-manager.protocols.transaction :as tx]
-            [clojure-data-grinder-core.protocols.impl :as impl])
+            [clojure-data-grinder-core.protocols.impl :as impl]
+            [next.jdbc :as jdbc]
+            [clojure.java.io :as io]
+            [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard])
   (:import
     (java.nio ByteBuffer)
     (pt.iceman.middleware.cars.ice ICEBased)
-    (coms_middleware.core MCUSource)))
+    (coms_middleware.core MCUSource)
+    (java.util UUID)))
+
+(set! *unchecked-math* true)
 
 (defn <!!?
   "Reads from chan synchronously, waiting for a given maximum of milliseconds.
@@ -44,6 +55,11 @@
 
 (use-fixtures :each cleaning-fixture)
 
+(defn- short-to-2-bytes [^Short s]
+  (let [b1 (bit-and s 0xFF)
+        b2 (bit-and (bit-shift-right s 8) 0xFF)]
+    [b1 b2]))
+
 (deftest mcu-source-test
   (let [_ (set-transaction-manager :mem {} :local main-channel queues)
         state (atom {:successful-step-calls 0
@@ -56,136 +72,59 @@
                     :buffer-size 14
                     :channels {:out {:output-channel "test"}}})]
     (with-redefs [queues (atom {"test" queue})]
-      (let [^MCUSource mcu-source (->MCUSource state name conf 1000)]
+      (let [^MCUSource mcu-source (->MCUSource state name conf 1000)
+            [b1 b2] (short-to-2-bytes (short 69))]
         (.init mcu-source)
 
         (Thread/sleep 2000)
 
-        (send-packet @socket (.getBytes "this is a test") "localhost" 9999)
+        (send-packet @socket (byte-array 3 [interpreter/temperature-value b1 b2]) "localhost" 9999)
 
         (let [{shard :value} (c/take! queue)
               value (.getValue shard)
               status (.getStatus shard)
               {pb :total-step-calls sb :successful-step-calls} (.getState mcu-source)]
           (are [x y] (= x y)
-                     (ByteBuffer/wrap (.getBytes "this is a test")) value
+                     {:command 192
+                      :value 69} value
                      :ok status
                      pb 1
                      sb 1))
 
         (.stop mcu-source)))))
 
-(defn- short-to-2-bytes [^Short s]
-  (let [b1 (bit-and s 0xFF)
-        b2 (bit-and (bit-shift-right s 8) 0xFF)]
-    [b1 b2]))
-
-(deftest mcu-grinder-test
-  (let [tm (set-transaction-manager :mem {} :local main-channel queues)
-        state (atom {:successful-step-calls 0
-                     :unsuccessful-step-calls 0
-                     :total-step-calls 0
-                     :stopped false})
-        name "test-source"
-        queue (new-queue "test" 1)
-        queue2 (new-queue "test2" 1)
-        conf (atom {:type :ice
-                    :channels {:in "test"
-                               :out {:output-channel "test2"}}})
-        speed (short-to-2-bytes 50)
-        temperature (short-to-2-bytes 80)
-        rpm (short-to-2-bytes 3000)
-        fuel (short-to-2-bytes 32)
-        arr (byte-array [0x00
-                         0x00
-                         0x00
-                         0xFF
-                         0xFF
-                         0x00
-                         0xFF
-                         (first speed)
-                         (second speed)
-                         0x00
-                         0xFF
-                         (first rpm)
-                         (second rpm)
-                         (first fuel)
-                         (second fuel)
-                         (first temperature)
-                         (second temperature)])
-        buff (ByteBuffer/wrap arr)]
-    (with-redefs [queues (atom {"test" queue
-                                "test2" queue2})]
-      (let [mcu-grinder (->MCUOutGrinder state
-                                         name
-                                         1
-                                         conf
-                                         500)
-            tx (tx-mng/startTx tm conf)
-            shard (tx/addShard tx buff "test" :ok)]
-        (c/put! queue shard)
-
-        (.init mcu-grinder)
-
-        (Thread/sleep 1000)
-
-        (let [{shard :value} (c/take! queue2)
-              ice (.getValue shard)]
-          (are [x y] (= x y)
-                     false (.isOilPressureLow ice)
-                     true (.isSparkPlugOn ice)
-                     false (.isBattery12vNotCharging ice)
-                     true (.isTurningSigns ice)
-                     true (.isAbsAnomaly ice)
-                     false (.isParkingBrakeOn ice)
-                     false (.isBrakesHydraulicFluidLevelLow ice)
-                     false (.isHighBeamOn ice)
-                     true (.isIgnition ice)
-                     50 (.getSpeed ice)
-                     3000 (.getRpmAnalogLevel ice)
-                     32 (.getFuelAnalogLevel ice)
-                     80 (.getEngineTemperatureAnalogLevel ice)))
-
-        (.stop mcu-grinder)))))
-
 (deftest test-basecommand-grinder
-  (let [tm (set-transaction-manager :mem {} :local main-channel queues)
+  (let [db-cfg {:dbtype "h2" :dbname "test"}
+        ds (jdbc/get-datasource db-cfg)
+        car-id (UUID/randomUUID)
+        _ (try (jdbc/execute! ds ["create table cars (id uuid primary key,
+                                  constant_kilometers double,
+                                  trip_kilometers double,
+                                  tyre_offset double)"])
+               (catch Exception _))
+        _ (jdbc/execute! ds ["INSERT INTO cars (id, constant_kilometers, trip_kilometers, tyre_offset) VALUES (?, ?, ?, ?);"
+                             car-id
+                             20000
+                             500.2
+                             1.4])
+        tm (set-transaction-manager :mem {} :local main-channel queues)
         gsm (impl/set-global-state-manager :mem nil)
         state (atom {:successful-step-calls 0
                      :unsuccessful-step-calls 0
                      :total-step-calls 0
                      :stopped false})
         name "test-source"
-        queue (new-queue "test" 1)
-        queue2 (new-queue "test2" 1)
-        speed (short-to-2-bytes 50)
-        temperature (short-to-2-bytes 80)
-        rpm (short-to-2-bytes 3000)
-        fuel (short-to-2-bytes 32)
-        arr (byte-array [0x00
-                         0xFF
-                         0xFF
-                         0x00
-                         0x00
-                         0xFF
-                         0xFF
-                         (first speed)
-                         (second speed)
-                         0x00
-                         0x00
-                         (first rpm)
-                         (second rpm)
-                         (first fuel)
-                         (second fuel)
-                         (first temperature)
-                         (second temperature)])
-        buff (ByteBuffer/wrap arr)
-        value (ICEBased. buff)
-        expected (serialize value)
-        conf (atom {:type :ice
-                    :tyre-circumference 3.14
-                    :idle-rpm 738
-                    :idle-rpm-freq 40
+        queue (new-queue "test" 4)
+        queue2 (new-queue "test2" 4)
+        value {:command 171}
+        value2 {:command 180
+                :value 3500}
+        value3 {:command 176
+               :value 123}
+        value4 {:command 224
+                :value 73}
+        conf (atom {:db-cfg db-cfg
+                    :car-id car-id
                     :channels {:in "test"
                                :out {:output-channel "test2"}}
                     :destination-port 9998
@@ -193,26 +132,40 @@
                     :source-port 9999})]
     (with-redefs [queues (atom {"test" queue
                                 "test2" queue2})]
-      (let [base-command-grinder (->BaseCommandGrinder state name 1 conf 1000)
+      (let [base-command-grinder (->BaseCommandGrinder state name 1 conf 450)
             tx (tx-mng/startTx tm conf)
-            shard (tx/addShard tx value "test" :ok)]
+            shard (tx/addShard tx value "test" :ok)
+            tx2 (tx-mng/startTx tm conf)
+            shard2 (tx/addShard tx2 value2 "test" :ok)
+            tx3 (tx-mng/startTx tm conf)
+            shard3 (tx/addShard tx3 value3 "test" :ok)
+            tx4 (tx-mng/startTx tm conf)
+            shard4 (tx/addShard tx4 value4 "test" :ok)]
         (c/put! queue shard)
+        (c/put! queue shard2)
+        (c/put! queue shard3)
+        (c/put! queue shard4)
 
         (.init base-command-grinder)
 
         (Thread/sleep 3000)
 
-        (let [_ (c/take! queue2)
+        (let [s1 (c/take! queue2)
+              s2 (c/take! queue2)
+              s3 (c/take! queue2)
+              {shard :value} (c/take! queue2)
               st (c/getStateValue gsm :car-state)]
           (are [x y] (= x y)
-                     0.004033336352993614 (.getTripDistance st)
-                     0.004033336352993614 (.getTotalDistance st)
-                     50 (.getSpeed st)
-                     55350 (.getRpm st)
-                     66.83039949173809 (.getTemperature st)
-                     47.48561277403496 (.getFuelLevel st))
+                     500.2039537412697 (.getTripDistance st)
+                     20000.00395374127 (.getTotalDistance st)
+                     123 (.getSpeed st)
+                     20322 (.getRpm st)
+                     27 (.getFuelLevel st)
+                     st (tx-shard/getValue shard))
 
-          (.stop base-command-grinder))))))
+          (.stop base-command-grinder)
+
+          (jdbc/execute! ds ["DROP TABLE cars"]))))))
 
 (deftest test-dashboard-sink
   (let [tm (set-transaction-manager :mem {} :local main-channel queues)

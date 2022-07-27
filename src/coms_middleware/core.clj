@@ -5,17 +5,15 @@
             [clojure-data-grinder-core.common :as common]
             [clojure-data-grinder-core.validation :as v]
             [clojure.string :as str]
-            [coms-middleware.car-state :as c-state]
+            [coms-middleware.comm-protocol-interpreter :as interpreter]
             [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard]
             [clojure.core.async.impl.concurrent :as conc]
-            [next.jdbc.sql :as jdbc-sql])
+            [next.jdbc.sql :as jdbc-sql]
+            [next.jdbc :as jdbc])
   (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
-           (java.nio ByteBuffer)
-           (pt.iceman.middleware.cars.ev EVBased)
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
-           (coms_middleware.car_state CarState)
            (java.util.concurrent Executors))
   (:gen-class))
 
@@ -43,6 +41,23 @@
         packet (DatagramPacket. payload length address)]
     (.send socket packet)))
 
+(defn bytes-to-int
+  ([bytes]
+   (bit-or (bit-and (first bytes)
+                    0xFF)
+           (bit-and (bit-shift-left (second bytes) 8)
+                    0xFF00))))
+
+(defn byte-to-int [byte]
+  (bit-and byte 0xFF))
+
+(defn- process-command [cmd-ar]
+  (let [ar-size (count cmd-ar)]
+    (if (= 1 ar-size)
+      {:command (byte-to-int (first cmd-ar))}
+      {:command (byte-to-int (first cmd-ar))
+       :value (bytes-to-int (rest cmd-ar))})))
+
 (defrecord MCUSource [state name conf poll-frequency-ms]
   c/Source
   c/Step
@@ -61,12 +76,12 @@
                                              name
                                              state
                                              poll-frequency-ms
-                                             (fn []
+                                             (fn [_]
                                                (log/debug "Calling out MCUSource" name)
                                                (-> socket
                                                    (receive-packet (:buffer-size @conf))
                                                    (byte-array)
-                                                   (ByteBuffer/wrap)))
+                                                   process-command))
                                              [:successful-step-calls :total-step-calls]
                                              [:unsuccessful-step-calls :total-step-calls])]
              :executor executor)
@@ -129,121 +144,40 @@
 (extend MCUSource c/Outputter impl/common-outputter-implementation)
 (extend MCUSource c/Taker impl/common-taker-implementation)
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defmulti get-command-type (fn [type ^ByteBuffer _] type))
-
-(defmethod get-command-type :ice [_ ^ByteBuffer value]
-  (ICEBased. value))
-
-(defmethod get-command-type :ev [_ ^ByteBuffer value]
-  (EVBased. value))
-
-(defrecord MCUOutGrinder [state name threads conf poll-frequency-ms]
-  c/Grinder
-  (grind [_ shard]
-    (let [v (tx-shard/getValue shard)]
-      (log/debug "Grinding value " v " on Grinder " name)
-      (tx-shard/updateValue shard (get-command-type (:type @conf) v))
-      shard))
-  c/Step
-  (init [this]
-    (let [in (-> conf deref :channels :in)
-          out-ch (-> conf deref :channels :out :output-channel)
-          executor (Executors/newScheduledThreadPool threads
-                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
-      (swap! conf assoc
-             :scheduled-fns [(impl/start-take-loop this
-                                                  executor
-                                                  threads
-                                                  in
-                                                  out-ch
-                                                  name
-                                                  state
-                                                  poll-frequency-ms
-                                                  (fn [shard]
-                                                    (c/grind this shard))
-                                                  [:total-step-calls :successful-step-calls]
-                                                  [:total-step-calls :unsuccessful-step-calls])]
-             :executor executor)
-      (log/info "Initialized MCUOutGrinder " name)))
-  (validate [_]
-    (let [result (cond-> []
-                   (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
-                   (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
-                   (not (-> conf deref :type)) (conj "Does not contain vehicle type"))]
-      (if (seq result)
-        (throw (ex-info "Problem validating MCUOutGrinder conf!" {:message (str/join ", " result)}))
-        (log/debug "MCUOutGrinder " name " validated"))))
-  (getState [_] @state)
-  (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (getConf [_] @conf)
-  (stop [_]
-    (log/info "Stopping MCUOutGrinder" name)
-    (impl/stop-common-step state conf)
-    (log/info "Stopped MCUOutGrinder" name)))
-
-(def ^:private mcu-grinder-impl-fmt {:state v/atomic
-                                     :name v/non-empty-str
-                                     :conf v/atomic
-                                     :v-fn v/not-nil
-                                     :x-fn v/not-nil
-                                     :threads v/numeric
-                                     :poll-frequency-ms v/numeric})
-
-(defmethod impl/validate-step-setup "coms-middleware.core/map->MCUOutGrinder" [_ setup]
-  (let [[_ err] (v/validate mcu-grinder-impl-fmt setup)]
-    (when err
-      (throw (ex-info "Problem validating MCUOutGrinder" {:message (v/humanize-error err)})))))
-
-(defmethod impl/bootstrap-step "coms-middleware.core/map->MCUOutGrinder"
-  [impl {name :name
-         conf :conf
-         tx :tx
-         ^Symbol v-fn :v-fn
-         ^Symbol x-fn :x-fn
-         pf :poll-frequency-ms
-         threads :threads}]
-  (let [conf (assoc conf :tx tx)
-        [v-fn x-fn] (common/resolve-all-functions v-fn x-fn)
-        v-fn (or v-fn (fn [_] nil))
-        setup {:v-fn v-fn
-               :x-fn x-fn
-               :poll-frequency-ms pf
-               :name name
-               :conf conf
-               :threads threads
-               :state (atom {:total-step-calls 0
-                             :successful-step-calls 0
-                             :unsuccessful-step-calls 0
-                             :stopped false})}]
-    [(impl/step-config->instance name impl setup)]))
-
-(extend MCUOutGrinder c/Dispatcher impl/default-dispatcher-implementation)
-(extend MCUOutGrinder c/TxPurifier impl/default-tx-purifier-implementation)
-(extend MCUOutGrinder c/Taker impl/common-taker-implementation)
-(extend MCUOutGrinder c/Outputter impl/common-outputter-implementation)
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</MCUOutGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn- db-settings->basecommand [res]
+  (let [basecommand (ICEBased.)]
+    (doto basecommand
+      (.setIgnition false)
+      (.setSpeed 0)
+      (.setRpm 0)
+      (.setFuelLevel 0)
+      (.setEngineTemperature 0)
+      (.setTripDistance (:CARS/TRIP_KILOMETERS res))
+      (.setTotalDistance (:CARS/CONSTANT_KILOMETERS res)))))
+
 (defrecord BaseCommandGrinder [state name threads conf poll-frequency-ms]
   c/Grinder
-  (grind [_ shard]
+  (grind [_ _ shard]
     (let [v (tx-shard/getValue shard)]
       (log/debug "Grinding value " v " on Grinder " name)
-      (let [^CarState car-state (c/getStateValue @impl/global-state-manager :car-state)]
-        (tx-shard/updateValue shard (.processCommand car-state v conf)))
+      (let [^ICEBased car-state (c/getStateValue @impl/global-state-manager :car-state)
+            ^ICEBased car-state (interpreter/ignition-state (.isIgnition car-state) car-state v)]
+        (c/alterStateValue @impl/global-state-manager :car-state car-state)
+        (tx-shard/updateValue shard car-state))
       shard))
   c/Step
   (init [this]
     (let [in (-> conf deref :channels :in)
           out-ch (-> conf deref :channels :out :output-channel)
+          car-id (-> conf deref :car-id)
+          db-cfg (-> conf deref :db-cfg)
+          ds (jdbc/get-datasource db-cfg)
+          car-settings (first (jdbc/execute! ds ["select trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
+          basecommand (db-settings->basecommand car-settings)
           executor (Executors/newScheduledThreadPool threads
-                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
-          tyre-circumference (-> conf deref :tyre-circumference)
-          car-type (-> conf deref :type)
-          car-state (doto (c-state/get-car-state car-type)
-                      (.setTyreCircumference tyre-circumference))]
-      (c/alterStateValue @impl/global-state-manager :car-state car-state)
+                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
+      (c/alterStateValue @impl/global-state-manager :car-state basecommand)
       (swap! conf assoc
              :scheduled-fns [(impl/start-take-loop this
                                                   executor
@@ -253,8 +187,8 @@
                                                   name
                                                   state
                                                   poll-frequency-ms
-                                                  (fn [shard]
-                                                    (c/grind this shard))
+                                                  (fn [t shard]
+                                                    (c/grind this t shard))
                                                   [:total-step-calls :successful-step-calls]
                                                   [:total-step-calls :unsuccessful-step-calls])]
              :executor executor)
@@ -328,7 +262,7 @@
 
 (defrecord DashboardSink [state name threads conf poll-frequency-ms]
   c/Sink
-  (sink [_ shard]
+  (sink [_ _ shard]
     (let [v (tx-shard/getValue shard)]
       (log/debug "Sinking value " v " to " name)
       (tx-shard/updateValue shard (send-packet (:socket @conf) (serialize v) (:destination-host @conf) (:destination-port @conf)))
@@ -359,8 +293,8 @@
                                                   name
                                                   state
                                                   poll-frequency-ms
-                                                  (fn [shard]
-                                                    (c/sink this shard))
+                                                  (fn [t shard]
+                                                    (c/sink this t shard))
                                                   [:total-step-calls :successful-step-calls]
                                                   [:total-step-calls :unsuccessful-step-calls])]
              :executor executor)
@@ -417,19 +351,6 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;CREATE TABLE IF NOT EXISTS cars (
-;                                  id UUID,
-;                                     constant_kilometers DOUBLE PRECISION,
-;                                     trip_kilometers DOUBLE PRECISION,
-;                                     trip_initial_fuel_level DOUBLE PRECISION,
-;                                     average_fuel_consumption DOUBLE PRECISION,
-;                                     dashboard_type TEXT,
-;                                     tyre_offset DOUBLE PRECISION,
-;                                     next_oil_change DOUBLE PRECISION,
-;
-;                                     PRIMARY KEY (id)
-;                                     --     FOREIGN KEY (owner) REFERENCES users (login)
-;                                     );
 (defn- command->update-km [command]
   {:constant_kilometers (.getTotalDistance command)
    :trip_kilometers (.getTripDistance command)})
