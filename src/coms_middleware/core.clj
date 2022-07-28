@@ -65,6 +65,7 @@
   (init [this]
     (let [out-ch (-> conf deref :channels :out :output-channel)
           port (-> conf deref :port)
+          buffer-size (-> conf deref :buffer-size)
           executor (Executors/newScheduledThreadPool 1
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
           socket (make-socket port)]
@@ -80,7 +81,7 @@
                                              (fn [_]
                                                (log/debug "Calling out MCUSource" name)
                                                (-> socket
-                                                   (receive-packet (:buffer-size @conf))
+                                                   (receive-packet buffer-size)
                                                    (byte-array)
                                                    process-command))
                                              [:successful-step-calls :total-step-calls]
@@ -92,6 +93,7 @@
     (let [result (cond-> []
                    (not (-> conf deref :port)) (conj "No listening port configured")
                    (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
+                   (not (-> conf deref :buffer-size)) (conj "Does not contain buffer-size")
                    (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
                    (not (-> conf deref :tx :clean-up-fn)) (conj "Does not contain cleanup function"))]
       (if (seq result)
@@ -131,9 +133,9 @@
                :name name
                :conf conf
                :threads threads
-               :state (atom {:successful-source-calls 0
-                             :unsuccessful-source-calls 0
-                             :source-calls 0
+               :state (atom {:successful-step-calls 0
+                             :unsuccessful-step-calls 0
+                             :total-step-calls 0
                              :stopped false})}]
     [(impl/step-config->instance name impl setup)]))
 
@@ -150,6 +152,7 @@
       (.setRpm 0)
       (.setFuelLevel 0)
       (.setEngineTemperature 0)
+      (.setCarId (:cars/id res))
       (.setTripDistance (:cars/trip_kilometers res))
       (.setTotalDistance (:cars/constant_kilometers res)))))
 
@@ -170,7 +173,7 @@
           car-id (-> conf deref :car-id (UUID/fromString))
           db-cfg (-> conf deref :db-cfg)
           ds (jdbc/get-datasource db-cfg)
-          car-settings (first (jdbc/execute! ds ["select trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
+          car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
           basecommand (db-settings->basecommand car-settings)
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
@@ -296,14 +299,14 @@
       (.close socket))
     (log/info "Stopped DashboardSink" name)))
 
-(def ^:private mcu-sink-fmt {:state v/atomic
+(def ^:private dashboard-sink-fmt {:state v/atomic
                              :name v/non-empty-str
                              :conf v/atomic
                              :threads v/numeric
                              :poll-frequency-ms v/numeric})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->DashboardSink" [_ setup]
-  (let [[_ err] (v/validate mcu-sink-fmt setup)]
+  (let [[_ err] (v/validate dashboard-sink-fmt setup)]
     (when err
       (throw (ex-info "Problem validating SinkImpl" {:message (v/humanize-error err)})))))
 

@@ -27,7 +27,7 @@
         packet (DatagramPacket. payload length address)]
     (.send socket packet)))
 
-(def socket (make-socket 4445))
+(def socket (when-not *compile-files* (make-socket 4445)))
 
 (defn serialize
   "Serializes value, returns a byte array"
