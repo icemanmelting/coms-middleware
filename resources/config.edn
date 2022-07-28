@@ -2,41 +2,42 @@
                        :staging {}
                        :production {}}
  :steps #profile {:default {:tx-manager {:type :mem
-                                         :conf {:file "path-to-transactions-file"}}
+                                         :conf {:file "/Users/iceman/Desktop/transactions.bin"}}
                             :global-state-manager {:type :mem
                                                    :conf {}}
                             :processing-type :local
                             :queues [{:name "mcu-out-grinder"
-                                        :buffer-size 10}
-                                       {:name "basecommand-grinder"
-                                        :buffer-size 10}
-                                       {:name "basecommand-demuxer"
-                                        :buffer-size 10}
-                                       {:name "dashboard-sink"
-                                        :buffer-size 10}
-                                       {:name "jdbc-sink"
-                                        :buffer-size 10}]
+                                      :buffer-size 10}
+                                     {:name "basecommand-grinder"
+                                      :buffer-size 10}
+                                     {:name "basecommand-demuxer"
+                                      :buffer-size 10}
+                                     {:name "dashboard-sink"
+                                      :buffer-size 10}
+                                     {:name "jdbc-sink"
+                                      :buffer-size 10}]
                             :sources [{:name "mcu-receiver"
                                        :tx {:fail-fast? true
                                             :clean-up-fn (fn [_ _])}
                                        :conf {:port 4444
-                                              :channels {:out [{:output-channel "mcu-out-grinder"}]}}
-                                       :type coms-middleware.core/MCUSource
+                                              :channels {:out {:output-channel "mcu-out-grinder"}}}
+                                       :type coms-middleware.core/map->MCUSource
+                                       :poll-frequency-ms 1
                                        :threads 1}]
                             :grinders [{:name "basecommand-grinder"
                                         :tx {:fail-fast? false
                                              :clean-up-fn (fn [_ _])
                                              :retries 2}
-                                        :db-cfg {:dbtype "postgres"
-                                                 :dbname "test"
-                                                 :host "127.0.0.1"
-                                                 :port 5432
-                                                 :user "postgres"
-                                                 :password "postgres"}
-                                        :conf {:type :ice
+                                        :conf {:car-id "0ffb0099-92b2-41dd-a5c1-b7893b1f93a5"
+                                               :db-cfg {:dbtype "postgres"
+                                                        :dbname "test"
+                                                        :host "127.0.0.1"
+                                                        :port 5432
+                                                        :user "postgres"
+                                                        :password "postgres"}
                                                :channels {:in "basecommand-grinder"
                                                           :out {:output-channel "basecommand-demuxer"}}}
-                                        :type coms-middleware.core/MCUOutGrinder
+                                        :type coms-middleware.core/map->BaseCommandGrinder
                                         :poll-frequency-ms 1
                                         :threads 1}]
                             :demuxers [{:name "basecommand-splitter"
@@ -46,6 +47,7 @@
                                         :conf {:channels {:in "basecommand-splitter"
                                                           :out {:trip-grinder "jdbc-sink"
                                                                 :datomic-sink "dashboard-sink"}}}
+                                        :threads 1
                                         :poll-frequency-ms 1}]
                             :error-sink {:name "logger-error"
                                          :conf {}
@@ -56,10 +58,10 @@
                                      :tx {:fail-fast? false
                                           :clean-up-fn (fn [_ _ _])}
                                      :conf {:channels {:in "dashboard-sink"}
-                                            :destination-host "the cars host"
-                                            :destination-port "the cars port"}
+                                            :destination-host "127.0.0.1"
+                                            :destination-port "9999"}
                                      :poll-frequency-ms 1
-                                     :type coms-middleware.core/DashboardSink
+                                     :type coms-middleware.core/map->DashboardSink
                                      :threads 1}
                                     {:name "jdbc-sink"
                                      :tx {:fail-fast? true
@@ -73,7 +75,7 @@
                                                      :port 5432
                                                      :user "postgres"
                                                      :password "postgres"}}
-                                     :x-fn twitter-hashtag-counter.core/insert-objects-sql
+                                     :x-fn coms-middleware.core/add-to-db
                                      :type clojure-data-grinder-core.protocols.impl/map->JDBCSink
                                      :poll-frequency-ms 1
                                      :threads 4}]}

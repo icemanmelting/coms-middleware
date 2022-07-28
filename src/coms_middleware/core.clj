@@ -14,7 +14,8 @@
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
-           (java.util.concurrent Executors))
+           (java.util.concurrent Executors)
+           (java.util UUID))
   (:gen-class))
 
 (defn make-socket
@@ -108,7 +109,8 @@
 (def ^:private mcu-source-impl-fmt {:state v/atomic
                                     :name v/non-empty-str
                                     :conf v/atomic
-                                    :threads v/numeric})
+                                    :threads v/numeric
+                                    :poll-frequency-ms v/numeric})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->MCUSource" [_ setup]
   (let [[_ err] (v/validate mcu-source-impl-fmt setup)]
@@ -119,18 +121,13 @@
   [impl {name :name
          conf :conf
          {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
-         ^Symbol v-fn :v-fn
-         ^Symbol x-fn :x-fn
          pf :poll-frequency-ms
          threads :threads}]
-  (let [[v-fn x-fn clean-up-fn] (common/resolve-all-functions v-fn x-fn clean-up-fn)
-        v-fn (or v-fn (fn [_] nil))
+  (let [[clean-up-fn] (common/resolve-all-functions clean-up-fn)
         conf (assoc conf :tx {:clean-up-fn clean-up-fn
                               :fail-fast? (or fail-fast? false)
                               :retries retries})
-        setup {:v-fn v-fn
-               :x-fn x-fn
-               :poll-frequency-ms pf
+        setup {:poll-frequency-ms pf
                :name name
                :conf conf
                :threads threads
@@ -153,8 +150,8 @@
       (.setRpm 0)
       (.setFuelLevel 0)
       (.setEngineTemperature 0)
-      (.setTripDistance (:CARS/TRIP_KILOMETERS res))
-      (.setTotalDistance (:CARS/CONSTANT_KILOMETERS res)))))
+      (.setTripDistance (:cars/trip_kilometers res))
+      (.setTotalDistance (:cars/constant_kilometers res)))))
 
 (defrecord BaseCommandGrinder [state name threads conf poll-frequency-ms]
   c/Grinder
@@ -170,7 +167,7 @@
   (init [this]
     (let [in (-> conf deref :channels :in)
           out-ch (-> conf deref :channels :out :output-channel)
-          car-id (-> conf deref :car-id)
+          car-id (-> conf deref :car-id (UUID/fromString))
           db-cfg (-> conf deref :db-cfg)
           ds (jdbc/get-datasource db-cfg)
           car-settings (first (jdbc/execute! ds ["select trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
@@ -196,9 +193,7 @@
   (validate [_]
     (let [result (cond-> []
                    (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
-                   (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
-                   (not (-> conf deref :type)) (conj "Does not contain vehicle type")
-                   (not (-> conf deref :tyre-circumference)) (conj "Does not contain vehicle tyre circumference"))]
+                   (nil? (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast"))]
       (if (seq result)
         (throw (ex-info "Problem validating BaseCommandGrinder conf!" {:message (str/join ", " result)}))
         (log/debug "BaseCommandGrinder " name " validated"))))
@@ -213,8 +208,6 @@
 (def ^:private basecommand-grinder-impl-fmt {:state v/atomic
                                              :name v/non-empty-str
                                              :conf v/atomic
-                                             :v-fn v/not-nil
-                                             :x-fn v/not-nil
                                              :threads v/numeric
                                              :poll-frequency-ms v/numeric})
 
@@ -227,16 +220,10 @@
   [impl {name :name
          conf :conf
          tx :tx
-         ^Symbol v-fn :v-fn
-         ^Symbol x-fn :x-fn
          pf :poll-frequency-ms
          threads :threads}]
   (let [conf (assoc conf :tx tx)
-        [v-fn x-fn] (common/resolve-all-functions v-fn x-fn)
-        v-fn (or v-fn (fn [_] nil))
-        setup {:v-fn v-fn
-               :x-fn x-fn
-               :poll-frequency-ms pf
+        setup {:poll-frequency-ms pf
                :name name
                :conf conf
                :threads threads
@@ -271,7 +258,7 @@
   (validate [_]
     (let [result (cond-> []
                    (not (-> conf deref :channels :in)) (conj "Does not contain in-channel")
-                   (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
+                   (nil? (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
                    (not (-> conf deref :destination-host)) (conj "Does not contain destination host")
                    (not (-> conf deref :destination-port)) (conj "Does not contain destination port"))]
       (if (seq result)
@@ -305,14 +292,13 @@
   (stop [_]
     (log/info "Stopping DashboardSink" name)
     (impl/stop-common-step state conf)
-    (.close (:socket @conf))
+    (when-let[socket (:socker @conf)]
+      (.close socket))
     (log/info "Stopped DashboardSink" name)))
 
 (def ^:private mcu-sink-fmt {:state v/atomic
                              :name v/non-empty-str
                              :conf v/atomic
-                             :v-fn v/not-nil
-                             :x-fn v/not-nil
                              :threads v/numeric
                              :poll-frequency-ms v/numeric})
 
@@ -324,17 +310,14 @@
 (defmethod impl/bootstrap-step "coms-middleware.core/map->DashboardSink"
   [impl {name :name
          conf :conf
-         tx :tx
-         ^Symbol v-fn :v-fn
-         ^Symbol x-fn :x-fn
+         {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
          pf :poll-frequency-ms
          threads :threads}]
-  (let [conf (assoc conf :tx tx)
-        [v-fn x-fn] (common/resolve-all-functions v-fn x-fn)
-        v-fn (or v-fn (fn [_] nil))
-        setup {:v-fn v-fn
-               :x-fn x-fn
-               :name name
+  (let [clean-up-fn (common/resolve-function clean-up-fn)
+        conf (assoc conf :tx {:clean-up-fn clean-up-fn
+                              :fail-fast? (or fail-fast? false)
+                              :retries retries})
+        setup {:name name
                :conf conf
                :threads threads
                :state (atom {:total-step-calls 0
@@ -355,10 +338,10 @@
   {:constant_kilometers (.getTotalDistance command)
    :trip_kilometers (.getTripDistance command)})
 
-(defn add-to-db [conf obj]
-  (jdbc-sql/update! (:conn conf)
+(defn add-to-db [conn basecommand]
+  (jdbc-sql/update! conn
                     :cars
-                    (command->update-km obj)
-                    ["id=?" (:car-id conf)]))
+                    (command->update-km basecommand)
+                    ["id=?" (.getCarId basecommand)]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
