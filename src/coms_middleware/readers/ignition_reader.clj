@@ -1,21 +1,23 @@
 (ns coms-middleware.readers.ignition-reader
-  (:require [coms-middleware.readers.common :refer [create-log]]))
+  (:import (pt.iceman.middleware.cars.ice ICEBased)))
 
 (defn ->ignition-on [basecommand _]
   (.setIgnition basecommand true)
-  (try
-    (create-log "INFO" "Ignition turned on")
-    (.exec (Runtime/getRuntime) "/etc/init.d/turnonscreen.sh")
-    (catch Exception _
-      (create-log "ERROR" "Could not read script to turn on screen")))
   basecommand)
 
+(defn- clear-state-values [^ICEBased basecommand]
+  (doto basecommand
+    (.setIgnition false)
+    (.setAbsAnomaly false)
+    (.setHighBeamOn false)
+    (.setFuelLevel 0)
+    (.setSpeed 0)
+    (.setBattery12vNotCharging false)
+    (.setBrakesHydraulicFluidLevelLow false)
+    (.setEngineTemperature 0)
+    (.setRpm 0)
+    (.setSparkPlugOn false)
+    (.setTurningSigns false)))
+
 (defn ->ignition-off [basecommand _]
-  (.setIgnition basecommand false)
-  (future (try
-            (Thread/sleep 5000)
-            (.exec (Runtime/getRuntime) "/etc/init.d/shutdownScreen.sh")
-            (catch Exception _
-              (create-log "INFO" "Could not read script to shutdown screen"))))
-  (create-log "INFO" "Ignition turned off")
-  basecommand)
+  (clear-state-values basecommand))

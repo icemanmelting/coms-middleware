@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS cars (
     id UUID,
     constant_kilometers DOUBLE PRECISION,
     trip_kilometers DOUBLE PRECISION,
-    trip_initial_fuel_level DOUBLE PRECISION,
     tyre_offset DOUBLE PRECISION,
 
     PRIMARY KEY (id)
