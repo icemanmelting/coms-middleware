@@ -17,8 +17,8 @@
                             :sources [{:name "mcu-receiver"
                                        :tx {:fail-fast? true
                                             :clean-up-fn (fn [_ _])}
-                                       :conf {:port 9999
-                                              :buffer-size 1024
+                                       :conf {:port 9887
+                                              :buffer-size 3
                                               :channels {:out {:output-channel "basecommand-grinder"}}}
                                        :type coms-middleware.core/map->MCUSource
                                        :poll-frequency-ms 1
@@ -30,7 +30,7 @@
                                         :conf {:car-id "0ffb0099-92b2-41dd-a5c1-b7893b1f93a5"
                                                :db-cfg {:dbtype "postgres"
                                                         :dbname "test"
-                                                        :host "host.docker.internal"
+                                                        :host "127.0.0.1"
                                                         :port 5432
                                                         :user "postgres"
                                                         :password "postgres"}
@@ -57,7 +57,7 @@
                                      :tx {:fail-fast? false
                                           :clean-up-fn (fn [_ _ _])}
                                      :conf {:channels {:in "dashboard-sink"}
-                                            :destination-host "192.168.1.230"
+                                            :destination-host "127.0.0.1"
                                             :destination-port 4444}
                                      :poll-frequency-ms 1
                                      :type coms-middleware.core/map->DashboardSink
@@ -70,13 +70,13 @@
                                             :db-name "twitter"
                                             :db-cfg {:dbtype "postgres"
                                                      :dbname "test"
-                                                     :host "host.docker.internal"
+                                                     :host "127.0.0.1"
                                                      :port 5432
                                                      :user "postgres"
                                                      :password "postgres"}}
                                      :x-fn coms-middleware.core/add-to-db
                                      :type clojure-data-grinder-core.protocols.impl/map->JDBCSink
                                      :poll-frequency-ms 1
-                                     :threads 4}]}
+                                     :threads 1}]}
                   :staging {}
                   :production {}}}

@@ -1,9 +1,9 @@
 (ns coms-middleware.readers.ignition-reader
-  (:import (pt.iceman.middleware.cars.ice ICEBased)))
+  (:import (pt.iceman.middleware.cars.ice ICEBased)
+           (pt.iceman.middleware.cars SimpleCommand)))
 
 (defn ->ignition-on [basecommand _]
-  (.setIgnition basecommand true)
-  basecommand)
+  [ (doto basecommand (.setIgnition true)) (SimpleCommand. "ignition" true)])
 
 (defn- clear-state-values [^ICEBased basecommand]
   (doto basecommand
@@ -20,4 +20,5 @@
     (.setTurningSigns false)))
 
 (defn ->ignition-off [basecommand _]
-  (clear-state-values basecommand))
+  [(clear-state-values basecommand)
+  (SimpleCommand. "ignition" false)])

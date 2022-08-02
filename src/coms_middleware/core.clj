@@ -9,8 +9,14 @@
             [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard]
             [clojure.core.async.impl.concurrent :as conc]
             [next.jdbc.sql :as jdbc-sql]
-            [next.jdbc :as jdbc])
-  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress)
+            [next.jdbc :as jdbc]
+            [clojure-data-grinder-core.protocols.protocols :as p]
+            [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
+            [clojure-data-grinder-tx-manager.protocols.common :as tx-common]
+            [clojure-data-grinder-core.statistics :as stats]
+            [clojure-data-grinder-tx-manager.protocols.transaction :as tx]
+            [clojure.core.async :as async])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress Socket)
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
@@ -25,9 +31,9 @@
 (defn receive-packet
   "Block until a UDP message is received on the given DatagramSocket, and
   return the payload message as a string."
-  [^DatagramSocket socket buffer-size]
-  (let [buffer (byte-array buffer-size)
-        packet (DatagramPacket. buffer buffer-size)]
+  [^DatagramSocket socket]
+  (let [buffer (byte-array 3)
+        packet (DatagramPacket. buffer 3)]
     (when-not (.isClosed socket)
       (.receive socket packet)
       (.getData packet))))
@@ -53,10 +59,11 @@
   (bit-and byte 0xFF))
 
 (defn- process-command [cmd-ar]
-  (let [ar-size (count cmd-ar)]
+  (let [ar-size (count cmd-ar)
+        command (byte-to-int (first cmd-ar))]
     (if (= 1 ar-size)
-      {:command (byte-to-int (first cmd-ar))}
-      {:command (byte-to-int (first cmd-ar))
+      {:command command}
+      {:command command
        :value (bytes-to-int (rest cmd-ar))})))
 
 (defrecord MCUSource [state name conf poll-frequency-ms]
@@ -65,35 +72,29 @@
   (init [this]
     (let [out-ch (-> conf deref :channels :out :output-channel)
           port (-> conf deref :port)
-          buffer-size (-> conf deref :buffer-size)
-          executor (Executors/newScheduledThreadPool 1
-                                                     (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
-          socket (make-socket port)]
+          socket (make-socket port)
+          executor (Executors/newScheduledThreadPool 1 (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
       (swap! conf assoc
              :socket socket
-             :scheduled-fns [(impl/start-loop this
-                                             executor
-                                             1
-                                             out-ch
-                                             name
-                                             state
-                                             poll-frequency-ms
-                                             (fn [_]
-                                               (log/debug "Calling out MCUSource" name)
-                                               (-> socket
-                                                   (receive-packet buffer-size)
-                                                   (byte-array)
-                                                   process-command))
-                                             [:successful-step-calls :total-step-calls]
-                                             [:unsuccessful-step-calls :total-step-calls])]
+             :scheduled-fns [(p/->future-loop this
+                                              executor
+                                              1
+                                              out-ch
+                                              name
+                                              state
+                                              poll-frequency-ms
+                                              (fn [_]
+                                                (log/debug "Calling out MCUSource" name)
+                                                (-> socket
+                                                    (receive-packet)
+                                                    (byte-array)
+                                                    process-command)))]
              :executor executor)
-
       (log/info "Initialized MCUSource " name)))
   (validate [_]
     (let [result (cond-> []
                    (not (-> conf deref :port)) (conj "No listening port configured")
                    (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
-                   (not (-> conf deref :buffer-size)) (conj "Does not contain buffer-size")
                    (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
                    (not (-> conf deref :tx :clean-up-fn)) (conj "Does not contain cleanup function"))]
       (if (seq result)
@@ -162,9 +163,9 @@
     (let [v (tx-shard/getValue shard)]
       (log/debug "Grinding value " v " on Grinder " name)
       (let [^ICEBased car-state (c/getStateValue @impl/global-state-manager :car-state)
-            ^ICEBased car-state (interpreter/ignition-state (.isIgnition car-state) car-state v)]
+            [car-state & _ :as res] (interpreter/ignition-state (.isIgnition car-state) car-state v)]
         (c/alterStateValue @impl/global-state-manager :car-state car-state)
-        (tx-shard/updateValue shard car-state))
+        (tx-shard/updateValue shard res))
       shard))
   c/Step
   (init [this]
@@ -174,12 +175,13 @@
           db-cfg (-> conf deref :db-cfg)
           ds (jdbc/get-datasource db-cfg)
           car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
+          _ (when-not car-settings (throw (ex-info (str "No settings found for car-id " car-id) {:car-id car-id})))
           basecommand (db-settings->basecommand car-settings)
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
       (c/alterStateValue @impl/global-state-manager :car-state basecommand)
       (swap! conf assoc
-             :scheduled-fns [(impl/start-take-loop this
+             :scheduled-fns [(p/take->future-loop this
                                                   executor
                                                   threads
                                                   in
@@ -188,9 +190,7 @@
                                                   state
                                                   poll-frequency-ms
                                                   (fn [t shard]
-                                                    (c/grind this t shard))
-                                                  [:total-step-calls :successful-step-calls]
-                                                  [:total-step-calls :unsuccessful-step-calls])]
+                                                    (c/grind this t shard)))]
              :executor executor)
       (log/info "Initialized BaseCommandGrinder " name)))
   (validate [_]
@@ -253,9 +253,13 @@
 (defrecord DashboardSink [state name threads conf poll-frequency-ms]
   c/Sink
   (sink [_ _ shard]
-    (let [v (tx-shard/getValue shard)]
+    (let [[_ & commands :as v] (tx-shard/getValue shard)
+          out-stream (:out-stream @conf)]
       (log/debug "Sinking value " v " to " name)
-      (tx-shard/updateValue shard (send-packet (:socket @conf) (serialize v) (:destination-host @conf) (:destination-port @conf)))
+      (doseq [c commands]
+        (.writeObject out-stream c)
+        (.flush out-stream)
+        (.reset out-stream))
       shard))
   c/Step
   (validate [_]
@@ -271,11 +275,13 @@
     (let [in (-> conf deref :channels :in)
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
-          socket (make-socket (:source-port @conf))]
+          socket (Socket. (:destination-host @conf) (:destination-port @conf))
+          out-stream (ObjectOutputStream. (.getOutputStream socket))
+          _ (.flush out-stream)]
       (swap! conf
              assoc
-             :socket socket
-             :scheduled-fns [(impl/start-take-loop this
+             :out-stream out-stream
+             :scheduled-fns [(p/take->future-loop this
                                                   executor
                                                   threads
                                                   in
@@ -284,9 +290,7 @@
                                                   state
                                                   poll-frequency-ms
                                                   (fn [t shard]
-                                                    (c/sink this t shard))
-                                                  [:total-step-calls :successful-step-calls]
-                                                  [:total-step-calls :unsuccessful-step-calls])]
+                                                    (c/sink this t shard)))]
              :executor executor)
       (log/info "Initialized DashboardSink " name)))
   (getState [_] @state)
@@ -295,15 +299,15 @@
   (stop [_]
     (log/info "Stopping DashboardSink" name)
     (impl/stop-common-step state conf)
-    (when-let[socket (:socker @conf)]
-      (.close socket))
+    (when-let [out-stream (:out-stream @conf)]
+      (.close out-stream))
     (log/info "Stopped DashboardSink" name)))
 
 (def ^:private dashboard-sink-fmt {:state v/atomic
-                             :name v/non-empty-str
-                             :conf v/atomic
-                             :threads v/numeric
-                             :poll-frequency-ms v/numeric})
+                                   :name v/non-empty-str
+                                   :conf v/atomic
+                                   :threads v/numeric
+                                   :poll-frequency-ms v/numeric})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->DashboardSink" [_ setup]
   (let [[_ err] (v/validate dashboard-sink-fmt setup)]
@@ -341,7 +345,7 @@
   {:constant_kilometers (.getTotalDistance command)
    :trip_kilometers (.getTripDistance command)})
 
-(defn add-to-db [conn basecommand]
+(defn add-to-db [conn [basecommand & _]]
   (jdbc-sql/update! conn
                     :cars
                     (command->update-km basecommand)

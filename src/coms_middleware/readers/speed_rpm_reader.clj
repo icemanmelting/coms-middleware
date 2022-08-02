@@ -1,4 +1,6 @@
-(ns coms-middleware.readers.speed-rpm-reader)
+(ns coms-middleware.readers.speed-rpm-reader
+  (:require [coms-middleware.readers.common :refer [avg]])
+  (:import (pt.iceman.middleware.cars SimpleCommand)))
 
 (defn calculate-distance [speed]
   (* (* 0.89288 (Math/pow 1.0073 speed) 0.00181)))
@@ -14,10 +16,15 @@
         (.setTripDistance trip)
         (.setTotalDistance abs)
         (.setSpeed speed)
-        #_(.setGear gear)))
-    basecommand))
+        #_(.setGear gear))
+      [basecommand
+       (SimpleCommand. "total-distance" abs)
+       (SimpleCommand. "speed" speed)])))
 
 (defn set-rpm [basecommand rpm-analog]
   (let [rpm (int (/ (* rpm-analog 900) 155))]
-    (doto basecommand
-      (.setRpm rpm))))
+    (if (> rpm 0)
+      [(doto basecommand
+         (.setRpm rpm))
+       (SimpleCommand. "rpm" rpm)]
+      [basecommand])))
