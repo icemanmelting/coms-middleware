@@ -38,7 +38,7 @@
 (defmethod command->action-ignition-off ignition-on [basecommand cmd-map]
   (ignition/->ignition-on basecommand cmd-map))
 
-(defmethod command->action-ignition-off turn-off [basecommand cmd-map]
+(defmethod command->action-ignition-off ignition-off [basecommand cmd-map]
   (ignition/->ignition-off basecommand cmd-map))
 
 (defmethod command->action-ignition-off :default [basecommand _] [basecommand])

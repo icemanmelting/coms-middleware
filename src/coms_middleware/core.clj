@@ -1,6 +1,5 @@
 (ns coms-middleware.core
   (:require [clojure.tools.logging :as log]
-            [clojure-data-grinder-core.protocols.protocols :as c]
             [clojure-data-grinder-core.protocols.impl :as impl]
             [clojure-data-grinder-core.common :as common]
             [clojure-data-grinder-core.validation :as v]
@@ -10,18 +9,14 @@
             [clojure.core.async.impl.concurrent :as conc]
             [next.jdbc.sql :as jdbc-sql]
             [next.jdbc :as jdbc]
-            [clojure-data-grinder-core.protocols.protocols :as p]
-            [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
-            [clojure-data-grinder-tx-manager.protocols.common :as tx-common]
-            [clojure-data-grinder-core.statistics :as stats]
-            [clojure-data-grinder-tx-manager.protocols.transaction :as tx]
-            [clojure.core.async :as async])
+            [clojure-data-grinder-core.protocols.protocols :as p])
   (:import (java.net DatagramPacket DatagramSocket InetSocketAddress Socket)
            (pt.iceman.middleware.cars.ice ICEBased)
            (java.io ByteArrayOutputStream ObjectOutputStream)
            (clojure.lang Symbol)
            (java.util.concurrent Executors)
-           (java.util UUID))
+           (java.util UUID)
+           (pt.iceman.middleware.cars BaseCommand))
   (:gen-class))
 
 (defn make-socket
@@ -66,9 +61,9 @@
       {:command command
        :value (bytes-to-int (rest cmd-ar))})))
 
-(defrecord MCUSource [state name conf poll-frequency-ms]
-  c/Source
-  c/Step
+(defrecord MCUSource [state name conf poll-frequency time-unit]
+  p/Source
+  p/Step
   (init [this]
     (let [out-ch (-> conf deref :channels :out :output-channel)
           port (-> conf deref :port)
@@ -82,7 +77,8 @@
                                               out-ch
                                               name
                                               state
-                                              poll-frequency-ms
+                                              poll-frequency
+                                              time-unit
                                               (fn [_]
                                                 (log/debug "Calling out MCUSource" name)
                                                 (-> socket
@@ -113,7 +109,8 @@
                                     :name v/non-empty-str
                                     :conf v/atomic
                                     :threads v/numeric
-                                    :poll-frequency-ms v/numeric})
+                                    :poll-frequency v/numeric
+                                    :time-unit v/non-empty-str})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->MCUSource" [_ setup]
   (let [[_ err] (v/validate mcu-source-impl-fmt setup)]
@@ -124,13 +121,15 @@
   [impl {name :name
          conf :conf
          {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
-         pf :poll-frequency-ms
+         pf :poll-frequency
+         time-unit :time-unit
          threads :threads}]
   (let [[clean-up-fn] (common/resolve-all-functions clean-up-fn)
         conf (assoc conf :tx {:clean-up-fn clean-up-fn
                               :fail-fast? (or fail-fast? false)
                               :retries retries})
-        setup {:poll-frequency-ms pf
+        setup {:poll-frequency pf
+               :time-unit time-unit
                :name name
                :conf conf
                :threads threads
@@ -140,34 +139,33 @@
                              :stopped false})}]
     [(impl/step-config->instance name impl setup)]))
 
-(extend MCUSource c/Dispatcher impl/default-dispatcher-implementation)
-(extend MCUSource c/Outputter impl/common-outputter-implementation)
-(extend MCUSource c/Taker impl/common-taker-implementation)
+(extend MCUSource p/Dispatcher impl/default-dispatcher-implementation)
+(extend MCUSource p/Outputter impl/common-outputter-implementation)
+(extend MCUSource p/Taker impl/common-taker-implementation)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn- db-settings->basecommand [res]
-  (let [basecommand (ICEBased.)]
-    (doto basecommand
-      (.setIgnition false)
-      (.setSpeed 0)
-      (.setRpm 0)
-      (.setFuelLevel 0)
-      (.setEngineTemperature 0)
-      (.setCarId (:cars/id res))
-      (.setTripDistance (:cars/trip_kilometers res))
-      (.setTotalDistance (:cars/constant_kilometers res)))))
+(def ^:private base-command (ICEBased.))
 
-(defrecord BaseCommandGrinder [state name threads conf poll-frequency-ms]
-  c/Grinder
+(defn- db-settings->basecommand [res]
+  (doto base-command
+    (.setIgnition false)
+    (.setSpeed 0)
+    (.setRpm 0)
+    (.setFuelLevel 0)
+    (.setEngineTemperature 0)
+    (.setCarId (:cars/id res))
+    (.setTripDistance (:cars/trip_kilometers res))
+    (.setTotalDistance (:cars/constant_kilometers res))))
+
+(defrecord BaseCommandGrinder [state name threads conf poll-frequency time-unit]
+  p/Grinder
   (grind [_ _ shard]
     (let [v (tx-shard/getValue shard)]
       (log/debug "Grinding value " v " on Grinder " name)
-      (let [^ICEBased car-state (c/getStateValue @impl/global-state-manager :car-state)
-            [car-state & _ :as res] (interpreter/ignition-state (.isIgnition car-state) car-state v)]
-        (c/alterStateValue @impl/global-state-manager :car-state car-state)
+      (let [res (interpreter/ignition-state (.isIgnition base-command) base-command v)]
         (tx-shard/updateValue shard res))
       shard))
-  c/Step
+  p/Step
   (init [this]
     (let [in (-> conf deref :channels :in)
           out-ch (-> conf deref :channels :out :output-channel)
@@ -176,10 +174,9 @@
           ds (jdbc/get-datasource db-cfg)
           car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
           _ (when-not car-settings (throw (ex-info (str "No settings found for car-id " car-id) {:car-id car-id})))
-          basecommand (db-settings->basecommand car-settings)
+          _ (db-settings->basecommand car-settings)
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
-      (c/alterStateValue @impl/global-state-manager :car-state basecommand)
       (swap! conf assoc
              :scheduled-fns [(p/take->future-loop this
                                                   executor
@@ -188,9 +185,10 @@
                                                   out-ch
                                                   name
                                                   state
-                                                  poll-frequency-ms
+                                                  poll-frequency
+                                                  time-unit
                                                   (fn [t shard]
-                                                    (c/grind this t shard)))]
+                                                    (p/grind this t shard)))]
              :executor executor)
       (log/info "Initialized BaseCommandGrinder " name)))
   (validate [_]
@@ -212,7 +210,8 @@
                                              :name v/non-empty-str
                                              :conf v/atomic
                                              :threads v/numeric
-                                             :poll-frequency-ms v/numeric})
+                                             :poll-frequency v/numeric
+                                             :time-unit v/non-empty-str})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->BaseCommandGrinder" [_ setup]
   (let [[_ err] (v/validate basecommand-grinder-impl-fmt setup)]
@@ -223,10 +222,12 @@
   [impl {name :name
          conf :conf
          tx :tx
-         pf :poll-frequency-ms
+         pf :poll-frequency
+         time-unit :time-unit
          threads :threads}]
   (let [conf (assoc conf :tx tx)
-        setup {:poll-frequency-ms pf
+        setup {:poll-frequency pf
+               :time-unit time-unit
                :name name
                :conf conf
                :threads threads
@@ -236,10 +237,10 @@
                              :stopped false})}]
     [(impl/step-config->instance name impl setup)]))
 
-(extend BaseCommandGrinder c/Dispatcher impl/default-dispatcher-implementation)
-(extend BaseCommandGrinder c/TxPurifier impl/default-tx-purifier-implementation)
-(extend BaseCommandGrinder c/Taker impl/common-taker-implementation)
-(extend BaseCommandGrinder c/Outputter impl/common-outputter-implementation)
+(extend BaseCommandGrinder p/Dispatcher impl/default-dispatcher-implementation)
+(extend BaseCommandGrinder p/TxPurifier impl/default-tx-purifier-implementation)
+(extend BaseCommandGrinder p/Taker impl/common-taker-implementation)
+(extend BaseCommandGrinder p/Outputter impl/common-outputter-implementation)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn serialize
@@ -250,18 +251,19 @@
       (.writeObject dos v))
     (.toByteArray buff)))
 
-(defrecord DashboardSink [state name threads conf poll-frequency-ms]
-  c/Sink
+(defrecord DashboardSink [state name threads conf poll-frequency time-unit]
+  p/Sink
   (sink [_ _ shard]
     (let [[_ & commands :as v] (tx-shard/getValue shard)
           out-stream (:out-stream @conf)]
       (log/debug "Sinking value " v " to " name)
-      (doseq [c commands]
-        (.writeObject out-stream c)
-        (.flush out-stream)
-        (.reset out-stream))
+      (when (seq commands)
+        (doseq [c commands]
+          (.writeObject out-stream c)
+          (.flush out-stream)
+          (.reset out-stream)))
       shard))
-  c/Step
+  p/Step
   (validate [_]
     (let [result (cond-> []
                    (not (-> conf deref :channels :in)) (conj "Does not contain in-channel")
@@ -288,9 +290,10 @@
                                                   nil
                                                   name
                                                   state
-                                                  poll-frequency-ms
+                                                  poll-frequency
+                                                  time-unit
                                                   (fn [t shard]
-                                                    (c/sink this t shard)))]
+                                                    (p/sink this t shard)))]
              :executor executor)
       (log/info "Initialized DashboardSink " name)))
   (getState [_] @state)
@@ -300,14 +303,15 @@
     (log/info "Stopping DashboardSink" name)
     (impl/stop-common-step state conf)
     (when-let [out-stream (:out-stream @conf)]
-      (.close out-stream))
+      (try (.close out-stream) (catch Exception _)))
     (log/info "Stopped DashboardSink" name)))
 
 (def ^:private dashboard-sink-fmt {:state v/atomic
                                    :name v/non-empty-str
                                    :conf v/atomic
                                    :threads v/numeric
-                                   :poll-frequency-ms v/numeric})
+                                   :poll-frequency v/numeric
+                                   :time-unit v/non-empty-str})
 
 (defmethod impl/validate-step-setup "coms-middleware.core/map->DashboardSink" [_ setup]
   (let [[_ err] (v/validate dashboard-sink-fmt setup)]
@@ -318,7 +322,8 @@
   [impl {name :name
          conf :conf
          {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
-         pf :poll-frequency-ms
+         pf :poll-frequency
+         time-unit :time-unit
          threads :threads}]
   (let [clean-up-fn (common/resolve-function clean-up-fn)
         conf (assoc conf :tx {:clean-up-fn clean-up-fn
@@ -331,13 +336,21 @@
                              :successful-step-calls 0
                              :unsuccessful-step-calls 0
                              :stopped false})
-               :poll-frequency-ms pf}]
+               :poll-frequency pf
+               :time-unit time-unit}]
     [(impl/step-config->instance name impl setup)]))
 
-(extend DashboardSink c/Dispatcher impl/sink-dispatcher-implementation)
-(extend DashboardSink c/TxPurifier impl/default-tx-purifier-implementation)
-(extend DashboardSink c/Taker impl/common-taker-implementation)
-(extend DashboardSink c/Outputter impl/common-outputter-implementation)
+(extend DashboardSink p/Dispatcher impl/sink-dispatcher-implementation)
+(extend DashboardSink p/TxPurifier impl/default-tx-purifier-implementation)
+(extend DashboardSink p/Taker impl/common-taker-implementation)
+(extend DashboardSink p/Outputter impl/common-outputter-implementation)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<Jobs>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn save-base-command []
+  base-command)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</Jobs>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -345,10 +358,10 @@
   {:constant_kilometers (.getTotalDistance command)
    :trip_kilometers (.getTripDistance command)})
 
-(defn add-to-db [conn [basecommand & _]]
+(defn add-to-db [conn _]
   (jdbc-sql/update! conn
                     :cars
-                    (command->update-km basecommand)
-                    ["id=?" (.getCarId basecommand)]))
+                    (command->update-km base-command)
+                    ["id=?" (.getCarId base-command)]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

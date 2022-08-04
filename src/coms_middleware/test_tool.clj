@@ -103,7 +103,7 @@
     (loop []
       (let [light (rand-int (- (count lights) 1))
             analog-value (rand-int (- (count analog-values) 1))]
-        (send-packet socket (byte-array 1 (unchecked-byte (nth lights light))) "192.168.1.70" 9887)
-        (send-packet socket (byte-array 3 [(unchecked-byte (nth analog-values analog-value)) (unchecked-byte 91) (unchecked-byte 2)]) "192.168.1.70" 9887))
-      (Thread/sleep 1)
+        (send-packet socket (byte-array 1 (unchecked-byte (nth lights light))) "127.0.0.1" 9887)
+        (send-packet socket (byte-array 3 [(unchecked-byte (nth analog-values analog-value)) (unchecked-byte 91) (unchecked-byte 2)]) "127.0.0.1" 9887))
+      ;(Thread/sleep 1)
       (recur))))

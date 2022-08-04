@@ -3,7 +3,7 @@
            (pt.iceman.middleware.cars SimpleCommand)))
 
 (defn ->ignition-on [basecommand _]
-  [ (doto basecommand (.setIgnition true)) (SimpleCommand. "ignition" true)])
+  [(doto basecommand (.setIgnition true)) (SimpleCommand. "ignition" true)])
 
 (defn- clear-state-values [^ICEBased basecommand]
   (doto basecommand
@@ -21,4 +21,14 @@
 
 (defn ->ignition-off [basecommand _]
   [(clear-state-values basecommand)
-  (SimpleCommand. "ignition" false)])
+   (SimpleCommand. "ignition" false)
+   (SimpleCommand. "abs" false)
+   (SimpleCommand. "high-beams" false)
+   (SimpleCommand. "battery" false)
+   (SimpleCommand. "brakes" false)
+   (SimpleCommand. "spark-plug" false)
+   (SimpleCommand. "turn-signs" false)
+   (SimpleCommand. "fuel" (double 0))
+   (SimpleCommand. "rpm" (int 0))
+   (SimpleCommand. "speed" (long 0))
+   (SimpleCommand. "temp" (double 0))])
