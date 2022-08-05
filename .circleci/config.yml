@@ -15,6 +15,12 @@ jobs: # basic units of work in a run
       - restore_cache: # restores saved cache if checksum hasn't changed since the last run
           key: comms-middleware-{{ checksum "project.clj" }}
 
+      - run: git clone https://github.com/sn0wF1eld/clj-time.git
+
+      - run: cd clj-time && lein deps && lein clean && lein install
+
+      - run: cd ~/comms-middleware
+
       - run: git clone https://github.com/sn0wF1eld/clojure-data-grinder-core.git
 
       - run: cd clojure-data-grinder-core && lein deps && lein clean && lein install
