@@ -144,7 +144,7 @@
 (extend MCUSource p/Taker impl/common-taker-implementation)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(def ^:private base-command (ICEBased.))
+(def base-command (ICEBased.))
 
 (defn- db-settings->basecommand [res]
   (doto base-command

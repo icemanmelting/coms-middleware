@@ -72,7 +72,7 @@
                     :buffer-size 14
                     :channels {:out {:output-channel "test"}}})]
     (with-redefs [queues (atom {"test" queue})]
-      (let [^MCUSource mcu-source (->MCUSource state name conf 1000)
+      (let [^MCUSource mcu-source (->MCUSource state name conf 1000 "ms")
             [b1 b2] (short-to-2-bytes (short 69))]
         (.init mcu-source)
 
@@ -124,15 +124,25 @@
         value4 {:command 224
                 :value 73}
         conf (atom {:db-cfg db-cfg
-                    :car-id car-id
+                    :car-id (str car-id)
                     :channels {:in "test"
                                :out {:output-channel "test2"}}
                     :destination-port 9998
                     :destination-host "localhost"
                     :source-port 9999})]
     (with-redefs [queues (atom {"test" queue
-                                "test2" queue2})]
-      (let [base-command-grinder (->BaseCommandGrinder state name 1 conf 450)
+                                "test2" queue2})
+                  coms-middleware.core/db-settings->basecommand (fn [res]
+                                                                  (doto coms-middleware.core/base-command
+                                                                    (.setIgnition false)
+                                                                    (.setSpeed 0)
+                                                                    (.setRpm 0)
+                                                                    (.setFuelLevel 0)
+                                                                    (.setEngineTemperature 0)
+                                                                    (.setCarId (:CARS/ID res))
+                                                                    (.setTripDistance (:CARS/TRIP_KILOMETERS res))
+                                                                    (.setTotalDistance (:CARS/CONSTANT_KILOMETERS res))))]
+      (let [base-command-grinder (->BaseCommandGrinder state name 1 conf 450 "ms")
             tx (tx-mng/startTx tm conf)
             shard (tx/addShard tx value "test" :ok)
             tx2 (tx-mng/startTx tm conf)
@@ -154,20 +164,20 @@
               s2 (c/take! queue2)
               s3 (c/take! queue2)
               {shard :value} (c/take! queue2)
-              st (c/getStateValue gsm :car-state)]
+              st coms-middleware.core/base-command]
           (are [x y] (= x y)
                      500.2039537412697 (.getTripDistance st)
                      20000.00395374127 (.getTotalDistance st)
                      123 (.getSpeed st)
                      20322 (.getRpm st)
                      27 (.getFuelLevel st)
-                     st (tx-shard/getValue shard))
+                     st (first (tx-shard/getValue shard)))
 
           (.stop base-command-grinder)
 
           (jdbc/execute! ds ["DROP TABLE cars"]))))))
 
-(deftest test-dashboard-sink
+#_(deftest test-dashboard-sink
   (let [tm (set-transaction-manager :mem {} :local main-channel queues)
         state (atom {:successful-step-calls 0
                      :unsuccessful-step-calls 0
@@ -205,7 +215,7 @@
                     :destination-host "localhost"
                     :source-port 9999})]
     (with-redefs [queues (atom {"test" queue})]
-      (let [dashboard-sink (->DashboardSink state name 1 conf 1000)
+      (let [dashboard-sink (->DashboardSink state name 1 conf 1000 "ms")
             tx (tx-mng/startTx tm conf)
             shard (tx/addShard tx value "test" :ok)
             res (thread (-> socket
