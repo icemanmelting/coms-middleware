@@ -1,0 +1,94 @@
+{:api-server #profile {:default {:port 8181}
+                       :staging {:port 8181}
+                       :production {:port 8181}}
+ :steps #profile {:default {:tx-manager {:type :mem
+                                         :conf {:file "/Users/iceman/Desktop/transactions.bin"}}
+                            :global-state-manager {:type :mem
+                                                   :conf {}}
+                            :processing-type :local
+                            :queues [{:name "basecommand-grinder"
+                                      :buffer-size 10}
+                                     {:name "basecommand-demuxer"
+                                      :buffer-size 10}
+                                     {:name "dashboard-sink"
+                                      :buffer-size 10}
+                                     {:name "jdbc-sink"
+                                      :buffer-size 10}]
+                            :sources [{:name "mcu-receiver"
+                                       :tx {:fail-fast? true
+                                            :clean-up-fn (fn [_ _])}
+                                       :conf {:port 9887
+                                              :buffer-size 3
+                                              :channels {:out {:output-channel "basecommand-grinder"}}}
+                                       :type coms-middleware.core/map->MCUSource
+                                       :poll-frequency 1
+                                       :time-unit "ms"
+                                       :threads 1}]
+                            :grinders [{:name "basecommand-grinder"
+                                        :tx {:fail-fast? true
+                                             :clean-up-fn (fn [_ _])
+                                             :retries 2}
+                                        :conf {:car-id "0ffb0099-92b2-41dd-a5c1-b7893b1f93a5"
+                                               :db-cfg {:dbtype "postgres"
+                                                        :dbname "test"
+                                                        :host "127.0.0.1"
+                                                        :port 5432
+                                                        :user "postgres"
+                                                        :password "postgres"}
+                                               :channels {:in "basecommand-grinder"
+                                                          :out {:output-channel "dashboard-sink"}}}
+                                        :type coms-middleware.core/map->BaseCommandGrinder
+                                        :poll-frequency 1
+                                        :time-unit "ms"
+                                        :threads 1}]
+                            #_:demuxers #_[{:name "basecommand-demuxer"
+                                        :tx {:fail-fast? true
+                                             :clean-up-fn (fn [_ _ _])
+                                             :retries 1}
+                                        :conf {:channels {:in "basecommand-demuxer"
+                                                          :out {:dashboard-sink "dashboard-sink"
+                                                                :jdbc-sink "jdbc-sink"}}}
+                                        :threads 1
+                                        :poll-frequency 1
+                                        :time-unit "ms"}]
+                            :error-sink {:name "logger-error"
+                                         :conf {}
+                                         :x-fn (fn [_ _ e] (clojure.tools.logging/error "Error found" e))
+                                         :poll-frequency 500
+                                         :time-unit "ms"
+                                         :threads 1}
+                            :sinks [{:name "dashboard-sink"
+                                     :tx {:fail-fast? true
+                                          :clean-up-fn (fn [_ _])}
+                                     :conf {:channels {:in "dashboard-sink"}
+                                            :destination-host "127.0.0.1"
+                                            :destination-port 4444}
+                                     :poll-frequency 1
+                                     :time-unit "ms"
+                                     :type coms-middleware.core/map->DashboardSink
+                                     :threads 1}
+                                    {:name "jdbc-sink"
+                                     :tx {:fail-fast? true
+                                          :clean-up-fn (fn [_ _ _])}
+                                     :conf {:channels {:in "jdbc-sink"}
+                                            :car-id "the-car-id"
+                                            :db-name "twitter"
+                                            :db-cfg {:dbtype "postgres"
+                                                     :dbname "test"
+                                                     :host "127.0.0.1"
+                                                     :port 5432
+                                                     :user "postgres"
+                                                     :password "postgres"}}
+                                     :x-fn coms-middleware.core/add-to-db
+                                     :type clojure-data-grinder-core.protocols.impl/map->JDBCSink
+                                     :poll-frequency 1
+                                     :time-unit "ms"
+                                     :threads 1}]
+                            :jobs [{:name "dummy-job"
+                                    :tx {:fail-fast? false
+                                         :clean-up-fn (fn [_ _])}
+                                    :conf {:schedule "/20 * * * * * *"
+                                           :channels {:out {:output-channel "jdbc-sink"}}}
+                                    :x-fn coms-middleware.core/save-base-command}]}
+                  :staging {}
+                  :production {}}}

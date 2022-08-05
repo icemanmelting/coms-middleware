@@ -4,7 +4,7 @@ jobs: # basic units of work in a run
     working_directory: ~/comms-middleware # directory where steps will run
 
     docker: # run the steps with Docker
-      - image: circleci/clojure:openjdk-8-lein-2.9.3-buster # ...with this image as the primary container; this is where all `steps` will run
+      - image: circleci/clojure:openjdk-11-lein-2.9.7-buster-node-browsers-legacy # ...with this image as the primary container; this is where all `steps` will run
         environment: # environment variables for primary container
           LEIN_ROOT: nbd
           JVM_OPTS: -Xmx3200m # limit the maximum heap size to prevent out of memory errors
@@ -15,11 +15,37 @@ jobs: # basic units of work in a run
       - restore_cache: # restores saved cache if checksum hasn't changed since the last run
           key: comms-middleware-{{ checksum "project.clj" }}
 
+      - run: git clone https://github.com/sn0wF1eld/clj-time.git
+
+      - run: cd clj-time && lein deps && lein clean && lein install
+
+      - run: cd ~/comms-middleware
+
+      - run: git clone https://github.com/sn0wF1eld/clojure-message-broker-common.git
+
+      - run: cd clojure-message-broker-common && lein deps && lein clean && lein install
+
+      - run: cd ~/comms-middleware
+
+      - run: git clone https://github.com/sn0wF1eld/clojure-message-broker-client.git
+
+      - run: cd clojure-message-broker-client && lein deps && lein clean && lein install
+
+      - run: cd ~/comms-middleware
+
+      - run: git clone https://github.com/sn0wF1eld/clojure-data-grinder-tx-manager.git
+
+      - run: cd clojure-data-grinder-tx-manager && lein deps && lein clean && lein install
+
+      - run: cd ~/comms-middleware
+
       - run: git clone https://github.com/sn0wF1eld/clojure-data-grinder-core.git
 
       - run: cd clojure-data-grinder-core && lein deps && lein clean && lein install
 
       - run: cd ~/comms-middleware
+
+#      - run: sudo apt-get update
 
       - run: sudo apt-get install maven
 
