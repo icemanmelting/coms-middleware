@@ -3,7 +3,9 @@
            (pt.iceman.middleware.cars SimpleCommand)))
 
 (defn ->ignition-on [basecommand _]
-  [(doto basecommand (.setIgnition true)) (SimpleCommand. "ignition" true)])
+  [(doto basecommand (.setIgnition true))
+   (SimpleCommand. "ignition" true)
+   (SimpleCommand. "total-distance" (.getTotalDistance ^ICEBased basecommand))])
 
 (defn- clear-state-values [^ICEBased basecommand]
   (doto basecommand

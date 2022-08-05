@@ -137,7 +137,7 @@
                              :unsuccessful-step-calls 0
                              :total-step-calls 0
                              :stopped false})}]
-    [(impl/step-config->instance name impl setup)]))
+    (impl/step-config->instance name impl setup)))
 
 (extend MCUSource p/Dispatcher impl/default-dispatcher-implementation)
 (extend MCUSource p/Outputter impl/common-outputter-implementation)
@@ -235,7 +235,7 @@
                              :successful-step-calls 0
                              :unsuccessful-step-calls 0
                              :stopped false})}]
-    [(impl/step-config->instance name impl setup)]))
+    (impl/step-config->instance name impl setup)))
 
 (extend BaseCommandGrinder p/Dispatcher impl/default-dispatcher-implementation)
 (extend BaseCommandGrinder p/TxPurifier impl/default-tx-purifier-implementation)
@@ -338,7 +338,7 @@
                              :stopped false})
                :poll-frequency pf
                :time-unit time-unit}]
-    [(impl/step-config->instance name impl setup)]))
+    (impl/step-config->instance name impl setup)))
 
 (extend DashboardSink p/Dispatcher impl/sink-dispatcher-implementation)
 (extend DashboardSink p/TxPurifier impl/default-tx-purifier-implementation)
