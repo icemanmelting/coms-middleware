@@ -1,5 +1,4 @@
 (ns coms-middleware.readers.speed-rpm-reader
-  (:require [coms-middleware.readers.common :refer [avg]])
   (:import (pt.iceman.middleware.cars SimpleCommand)))
 
 (defn calculate-distance [speed]
