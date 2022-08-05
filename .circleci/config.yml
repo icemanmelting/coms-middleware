@@ -45,7 +45,7 @@ jobs: # basic units of work in a run
 
       - run: cd ~/comms-middleware
 
-      - run: sudo apt-get update
+#      - run: sudo apt-get update
 
       - run: sudo apt-get install maven
 
