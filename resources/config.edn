@@ -87,7 +87,7 @@
                             :jobs [{:name "dummy-job"
                                     :tx {:fail-fast? false
                                          :clean-up-fn (fn [_ _])}
-                                    :conf {:schedule "/20 * * * * * *"
+                                    :conf {:schedule "/2 * * * * * *"
                                            :channels {:out {:output-channel "jdbc-sink"}}}
                                     :x-fn coms-middleware.core/save-base-command}]}
                   :staging {}

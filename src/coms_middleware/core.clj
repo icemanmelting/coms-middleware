@@ -16,7 +16,8 @@
            (clojure.lang Symbol)
            (java.util.concurrent Executors)
            (java.util UUID)
-           (pt.iceman.middleware.cars BaseCommand))
+           (pt.iceman.middleware.cars BaseCommand Trip)
+           (java.sql Date))
   (:gen-class))
 
 (defn make-socket
@@ -146,6 +147,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (def base-command (ICEBased.))
 
+(def trip (Trip.))
+
 (defn- db-settings->basecommand [res]
   (doto base-command
     (.setIgnition false)
@@ -162,7 +165,7 @@
   (grind [_ _ shard]
     (let [v (tx-shard/getValue shard)]
       (log/debug "Grinding value " v " on Grinder " name)
-      (let [res (interpreter/ignition-state (.isIgnition base-command) base-command v)]
+      (let [res (interpreter/ignition-state (.isIgnition base-command) base-command trip v)]
         (tx-shard/updateValue shard res))
       shard))
   p/Step
@@ -175,6 +178,7 @@
           car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
           _ (when-not car-settings (throw (ex-info (str "No settings found for car-id " car-id) {:car-id car-id})))
           _ (db-settings->basecommand car-settings)
+          _ (doto trip (.setInitialized false))
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
       (swap! conf assoc
@@ -346,8 +350,7 @@
 (extend DashboardSink p/Outputter impl/common-outputter-implementation)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<Jobs>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn save-base-command []
-  base-command)
+(defn save-base-command [] base-command)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</Jobs>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -358,10 +361,56 @@
   {:constant_kilometers (.getTotalDistance command)
    :trip_kilometers (.getTripDistance command)})
 
+(defn- avg-speed [start-km end-km start-time end-time]
+  (let [ms (- (.getTime end-time) (.getTime start-time))
+        hours (-> ms (/ 1000) (/ 3600) double)]
+    (double (/ (- end-km start-km) hours))))
+
 (defn add-to-db [conn _]
   (jdbc-sql/update! conn
                     :cars
                     (command->update-km base-command)
-                    ["id=?" (.getCarId base-command)]))
+                    ["id=?" (.getCarId base-command)])
+  (when (and (not (.isSaved trip))
+             (.isInitialized trip))
+    (jdbc-sql/insert! conn :trips {:id (.getId trip)
+                                   :car_id (.getCarId trip)
+                                   :start_km (.getStartKm trip)
+                                   :start_temp (.getStartTemp trip)
+                                   :start_fuel (.getStartFuel trip)
+                                   :start_time (.getStartTime trip)})
+    (doto trip (.setSaved true)))
+  (when (and (.isSaved trip)
+             (not (.isUpdated trip))
+             (not (.isIgnition base-command)))
+    (jdbc-sql/update! conn
+                      :trips
+                      {:end_km (.getEndKm trip)
+                       :end_temp (.getEndTemp trip)
+                       :end_fuel (.getEndFuel trip)
+                       :max_temp (.getMaxTemp trip)
+                       :max_speed (.getMaxSpeed trip)
+                       :end_time (.getEndTime trip)
+                       :avg_speed (avg-speed (.getStartKm trip)
+                                             (.getEndKm trip)
+                                             (.getStartTime trip)
+                                             (.getEndTime trip))}
+                      ["id=?" (.getId trip)])
+    (doto trip (.setUpdated true)))
+
+  (when (and (.isSaved trip)
+             (.isIgnition base-command))
+    (jdbc-sql/insert! conn :speed_data {:id (UUID/randomUUID)
+                                        :car_id (.getCarId base-command)
+                                        :trip_id (.getTripId trip)
+                                        :value (.getSpeed base-command)
+                                        :rpm (.getRpm base-command)
+                                        :gear 0
+                                        :timestamp (Date. (System/currentTimeMillis))})
+    (jdbc-sql/insert! conn :temperature_data {:id (UUID/randomUUID)
+                                              :car_id (.getCarId base-command)
+                                              :trip_id (.getTripId trip)
+                                              :value (.getEngineTemperature base-command)
+                                              :timestamp (Date. (System/currentTimeMillis))})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

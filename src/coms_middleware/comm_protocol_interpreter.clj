@@ -5,7 +5,7 @@
             [coms-middleware.readers.temperature-reader :as temp]
             [coms-middleware.readers.common :refer [car-running?]])
   (:import (com.ibm.icu.impl SimpleCache)
-           (pt.iceman.middleware.cars SimpleCommand BaseCommand)
+           (pt.iceman.middleware.cars SimpleCommand BaseCommand Trip)
            (pt.iceman.middleware.cars.ice ICEBased)))
 
 (def ^:const abs-anomaly-off 128)
@@ -33,144 +33,146 @@
 (def ^:const ignition-off 170)
 (def ^:const turn-off 168)
 
-(defmulti command->action-ignition-off (fn [_ cmd-map] (:command cmd-map)))
+(defmulti command->action-ignition-off (fn [_ _ cmd-map] (:command cmd-map)))
 
-(defmethod command->action-ignition-off ignition-on [basecommand cmd-map]
-  (ignition/->ignition-on basecommand cmd-map))
+(defmethod command->action-ignition-off ignition-on [basecommand trip cmd-map]
+  (ignition/->ignition-on basecommand trip cmd-map))
 
-(defmethod command->action-ignition-off ignition-off [basecommand cmd-map]
-  (ignition/->ignition-off basecommand cmd-map))
+(defmethod command->action-ignition-off ignition-off [basecommand trip cmd-map]
+  (ignition/->ignition-off basecommand trip cmd-map))
 
-(defmethod command->action-ignition-off :default [basecommand _] [basecommand])
+(defmethod command->action-ignition-off :default [basecommand _ _] [basecommand])
 
-(defmulti command->action-ignition-on (fn [_ cmd-map] (:command cmd-map)))
+(defmulti command->action-ignition-on (fn [_ _ cmd-map] (:command cmd-map)))
 
-(defmethod command->action-ignition-on abs-anomaly-off [basecommand _]
+(defmethod command->action-ignition-on abs-anomaly-off [basecommand _ _]
   [(doto basecommand
      (.setAbsAnomaly false))
    (SimpleCommand. "abs" false)])
 
-(defmethod command->action-ignition-on abs-anomaly-on [basecommand _]
+(defmethod command->action-ignition-on abs-anomaly-on [basecommand _ _]
   (when (car-running? basecommand)
     #_(create-log "ERROR" "ABS sensor error. Maybe one of the speed sensors is broken?"))
   [(doto basecommand
      (.setAbsAnomaly true))
    (SimpleCommand. "abs" true)])
 
-(defmethod command->action-ignition-on battery-off [basecommand _]
+(defmethod command->action-ignition-on battery-off [basecommand _ _]
   [(doto basecommand
      (.setBattery12vNotCharging false))
    (SimpleCommand. "battery" false)])
 
-(defmethod command->action-ignition-on battery-on [basecommand _]
+(defmethod command->action-ignition-on battery-on [basecommand _ _]
   (when (car-running? basecommand)
     #_(create-log "ERROR" "Battery not charging. Something wrong with the alternator."))
   [(doto basecommand
      (.setBattery12vNotCharging true))
    (SimpleCommand. "battery" true)])
 
-(defmethod command->action-ignition-on brakes-oil-off [basecommand _]
+(defmethod command->action-ignition-on brakes-oil-off [basecommand _ _]
   [(doto basecommand
      (.setBrakesHydraulicFluidLevelLow false))
    (SimpleCommand. "brakes" false)])
 
-(defmethod command->action-ignition-on brakes-oil-on [basecommand _]
+(defmethod command->action-ignition-on brakes-oil-on [basecommand _ _]
   (when (car-running? basecommand)
     #_(create-log "ERROR" "Brakes Oil pressure is too low!"))
   [(doto basecommand
      (.setBrakesHydraulicFluidLevelLow true))
    (SimpleCommand. "brakes" true)])
 
-(defmethod command->action-ignition-on high-beam-off [basecommand _]
+(defmethod command->action-ignition-on high-beam-off [basecommand _ _]
   #_(create-log "INFO" "High beams off")
   [(doto basecommand
      (.setHighBeamOn false))
    (SimpleCommand. "high-beams" false)])
 
-(defmethod command->action-ignition-on high-beam-on [basecommand _]
+(defmethod command->action-ignition-on high-beam-on [basecommand _ _]
   #_(create-log "INFO" "High beams on")
   [(doto basecommand
      (.setHighBeamOn true))
    (SimpleCommand. "high-beams" true)])
 
-(defmethod command->action-ignition-on oil-pressure-off [basecommand _]
+(defmethod command->action-ignition-on oil-pressure-off [basecommand _ _]
   [(doto basecommand
      (.setOilPressureLow false))
    (SimpleCommand. "oil-pressure" false)])
 
-(defmethod command->action-ignition-on oil-pressure-on [basecommand _]
+(defmethod command->action-ignition-on oil-pressure-on [basecommand _ _]
   (when (car-running? basecommand)
     #_(create-log "ERROR" "Engine's oil pressure is low."))
   [(doto basecommand
      (.setOilPressureLow true))
    (SimpleCommand. "oil-pressure" true)])
 
-(defmethod command->action-ignition-on parking-brake-off [basecommand _]
+(defmethod command->action-ignition-on parking-brake-off [basecommand _ _]
   #_(create-log "INFO" "Car park brake disengaged")
   [(doto basecommand
      (.setParkingBrakeOn false))
    (SimpleCommand. "parking" false)])
 
-(defmethod command->action-ignition-on parking-brake-on [basecommand _]
+(defmethod command->action-ignition-on parking-brake-on [basecommand _ _]
   #_(create-log "INFO" "Car park brake engaged")
   [(doto basecommand
      (.setParkingBrakeOn true))
    (SimpleCommand. "parking" true)])
 
-(defmethod command->action-ignition-on turning-signs-off [^BaseCommand basecommand _]
+(defmethod command->action-ignition-on turning-signs-off [^BaseCommand basecommand _ _]
   [(doto basecommand
      (.setTurningSigns false))
    (SimpleCommand. "turn-signs" false)])
 
-(defmethod command->action-ignition-on turning-signs-on [basecommand _]
+(defmethod command->action-ignition-on turning-signs-on [basecommand _ _]
   [(doto basecommand
      (.setTurningSigns true))
    (SimpleCommand. "turn-signs" true)])
 
-(defmethod command->action-ignition-on spark-plugs-off [basecommand _]
+(defmethod command->action-ignition-on spark-plugs-off [basecommand _ _]
   [(doto basecommand
      (.setSparkPlugOn false))
    (SimpleCommand. "spark-plug" false)])
 
-(defmethod command->action-ignition-on spark-plugs-on [^ICEBased basecommand _]
+(defmethod command->action-ignition-on spark-plugs-on [^ICEBased basecommand _ _]
   [(doto basecommand
      (.setSparkPlugOn true))
    (SimpleCommand. "spark-plug" true)])
 
-(defmethod command->action-ignition-on reset-trip-km [basecommand _]
+(defmethod command->action-ignition-on reset-trip-km [basecommand _ _]
   #_(create-log "INFO" "Trip km reseted")
   [(doto basecommand
      (.setTripDistance basecommand 0))])
 
-(defmethod command->action-ignition-on speed-pulse [basecommand {val :value}]
-  (speed/speed-distance-interpreter basecommand val))
+(defmethod command->action-ignition-on speed-pulse [basecommand trip {val :value}]
+  (speed/speed-distance-interpreter basecommand trip val))
 
-(defmethod command->action-ignition-on rpm-pulse [basecommand {val :value}]
+(defmethod command->action-ignition-on rpm-pulse [basecommand _ {val :value}]
   (speed/set-rpm basecommand val))
 
-(defmethod command->action-ignition-on fuel-value [basecommand cmd-map]
+(defmethod command->action-ignition-on fuel-value [basecommand _ cmd-map]
   (let [fuel (fuel/fuel-interpreter cmd-map)]
     [(doto basecommand
        (.setFuelLevel fuel))
      (SimpleCommand. "fuel" fuel)]))
 
-(defmethod command->action-ignition-on temperature-value [basecommand cmd-map]
+(defmethod command->action-ignition-on temperature-value [basecommand trip cmd-map]
   (let [temp (temp/temperature-interpreter cmd-map)]
+    (when (> temp (.getMaxTemp ^Trip trip))
+      (.setMaxTemp trip temp))
     (when (> temp 110)
       #_(create-log "INFO" "Engine temperature critical!"))
     [(doto basecommand
        (.setEngineTemperature temp))
      (SimpleCommand. "temp" temp)]))
 
-(defmethod command->action-ignition-on ignition-off [basecommand cmd-map]
-  (ignition/->ignition-off basecommand cmd-map))
+(defmethod command->action-ignition-on ignition-off [basecommand trip cmd-map]
+  (ignition/->ignition-off basecommand trip cmd-map))
 
-(defmethod command->action-ignition-on :default [basecommand _] [basecommand])
+(defmethod command->action-ignition-on :default [basecommand _ _] [basecommand])
 
-(defmulti ignition-state (fn [ignition _ _] ignition))
+(defmulti ignition-state (fn [ignition _ _ _] ignition))
 
-(defmethod ignition-state false [_ basecommand cmd-map]
-  (command->action-ignition-off basecommand cmd-map))
+(defmethod ignition-state false [_ basecommand trip cmd-map]
+  (command->action-ignition-off basecommand trip cmd-map))
 
-(defmethod ignition-state true [_ basecommand cmd-map]
-  (command->action-ignition-on basecommand cmd-map))
+(defmethod ignition-state true [_ basecommand trip cmd-map]
+  (command->action-ignition-on basecommand trip cmd-map))
