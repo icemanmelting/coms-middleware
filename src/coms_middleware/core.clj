@@ -9,10 +9,13 @@
             [clojure.core.async.impl.concurrent :as conc]
             [next.jdbc.sql :as jdbc-sql]
             [next.jdbc :as jdbc]
-            [clojure-data-grinder-core.protocols.protocols :as p])
-  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress Socket)
+            [clojure-data-grinder-core.protocols.protocols :as p]
+            [clojure-data-grinder-tx-manager.protocols.transaction-manager :as tx-mng]
+            [clojure-data-grinder-tx-manager.protocols.common :as tx-common]
+            [clojure-data-grinder-tx-manager.protocols.transaction :as tx])
+  (:import (java.net DatagramPacket DatagramSocket InetSocketAddress Socket ServerSocket)
            (pt.iceman.middleware.cars.ice ICEBased)
-           (java.io ByteArrayOutputStream ObjectOutputStream)
+           (java.io ByteArrayOutputStream ObjectOutputStream ObjectInputStream BufferedInputStream InputStream)
            (clojure.lang Symbol)
            (java.util.concurrent Executors)
            (java.util UUID)
@@ -62,22 +65,22 @@
       {:command command
        :value (bytes-to-int (rest cmd-ar))})))
 
-(defrecord MCUSource [state name conf poll-frequency time-unit]
+(defrecord MCUSource [name queues tx poll-frequency time-unit execution-state mutable-state port]
   p/Source
   p/Step
   (init [this]
-    (let [out-ch (-> conf deref :channels :out :output-channel)
-          port (-> conf deref :port)
+    (reset! execution-state (impl/make-standard-state))
+    (let [out-ch (-> queues :out :output-channel)
           socket (make-socket port)
           executor (Executors/newScheduledThreadPool 1 (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
-      (swap! conf assoc
+      (swap! mutable-state assoc
              :socket socket
              :scheduled-fns [(p/->future-loop this
                                               executor
                                               1
                                               out-ch
                                               name
-                                              state
+                                              execution-state
                                               poll-frequency
                                               time-unit
                                               (fn [_]
@@ -89,61 +92,79 @@
              :executor executor)
       (log/info "Initialized MCUSource " name)))
   (validate [_]
-    (let [result (cond-> []
-                   (not (-> conf deref :port)) (conj "No listening port configured")
-                   (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
-                   (not (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
-                   (not (-> conf deref :tx :clean-up-fn)) (conj "Does not contain cleanup function"))]
+    (let [result (cond-> (impl/validate-tx-config tx)
+                   (not port) (conj "Does not contain port")
+                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535")
+                   (not (-> queues :out :output-channel)) (conj "Does not contain out-channel"))]
       (if (seq result)
         (throw (ex-info "Problem validating MCUSource conf!" {:message (str/join ", " result)}))
-        (log/debug "Source " name " validated"))))
-  (getState [_] @state)
-  (getConf [_] @conf)
-  (isFailFast [_ _] (-> @conf :tx :fail-fast?))
+        (log/debug "MCUSource " name " validated"))))
+  (getState [_] @execution-state)
+  (getTxConf [_] tx)
+  (isFailFast [_ _] (-> tx :fail-fast?))
   (stop [_]
     (log/info "Stopping MCUSource" name)
-    (impl/stop-common-step state conf)
-    (.close (:socket @conf))
+    (impl/stop-common-step execution-state mutable-state)
+    (.close (:socket @mutable-state))
     (log/info "Stopped MCUSource" name)))
-
-(def ^:private mcu-source-impl-fmt {:state v/atomic
-                                    :name v/non-empty-str
-                                    :conf v/atomic
-                                    :threads v/numeric
-                                    :poll-frequency v/numeric
-                                    :time-unit v/non-empty-str})
-
-(defmethod impl/validate-step-setup "coms-middleware.core/map->MCUSource" [_ setup]
-  (let [[_ err] (v/validate mcu-source-impl-fmt setup)]
-    (when err
-      (throw (ex-info "Problem validating MCUSource" {:message (v/humanize-error err)})))))
-
-(defmethod impl/bootstrap-step "coms-middleware.core/map->MCUSource"
-  [impl {name :name
-         conf :conf
-         {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
-         pf :poll-frequency
-         time-unit :time-unit
-         threads :threads}]
-  (let [[clean-up-fn] (common/resolve-all-functions clean-up-fn)
-        conf (assoc conf :tx {:clean-up-fn clean-up-fn
-                              :fail-fast? (or fail-fast? false)
-                              :retries retries})
-        setup {:poll-frequency pf
-               :time-unit time-unit
-               :name name
-               :conf conf
-               :threads threads
-               :state (atom {:successful-step-calls 0
-                             :unsuccessful-step-calls 0
-                             :total-step-calls 0
-                             :stopped false})}]
-    (impl/step-config->instance name impl setup)))
 
 (extend MCUSource p/Dispatcher impl/default-dispatcher-implementation)
 (extend MCUSource p/Outputter impl/common-outputter-implementation)
 (extend MCUSource p/Taker impl/common-taker-implementation)
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defrecord SocketClientHandler [in-stream tx out-queue state]
+  Runnable
+  (run [this]
+    (while true
+      (let [buff (byte-array 3)
+            _ (.read ^InputStream in-stream buff)
+            v (process-command buff)
+            _ (when (= 170 (:command v)) (log/info "Read" v))
+            tx (tx-mng/startTx @tx-common/transaction-manager tx)
+            shard (tx/addShard tx v out-queue :ok)]
+        (swap! state #(impl/m->inc-vals % [:total-step-calls :successful-step-calls]))
+        (p/output-to-channel this name nil nil out-queue shard)))))
+
+(defrecord SocketServerSource [name queues tx execution-state mutable-state port]
+  p/Source
+  p/Step
+  (init [_]
+    (reset! execution-state (impl/make-standard-state))
+    (let [out-queue (-> queues :out :output-channel)
+          ^ServerSocket socket (ServerSocket. port)]
+      (swap! mutable-state assoc
+             :socket socket
+             :scheduled-fns [(future
+                               (loop []
+                                 (let [^Socket client (.accept socket)
+                                       _ (log/info "Client Connected" client)
+                                       handler (SocketClientHandler. (.getInputStream client)
+                                                             tx
+                                                             out-queue
+                                                             execution-state)]
+                                   (.start (Thread. handler)))
+                                 (recur)))]))
+    (log/info "Initialized SocketServerSource" name))
+  (validate [_]
+    (let [result (cond-> (impl/validate-tx-config tx)
+                   (not port) (conj "Does not contain port")
+                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535")
+                   (not (-> queues :out :output-channel)) (conj "Does not contain out-channel"))]
+      (if (seq result)
+        (throw (ex-info "Problem validating SocketServerSource conf!" {:message (str/join ", " result)}))
+        (log/debug "SocketServerSource " name " validated"))))
+  (getState [_] (dissoc @execution-state :execution-times))
+  (getTxConf [_] tx)
+  (isFailFast [_ _] (-> tx :fail-fast?))
+  (stop [_]
+    (log/info "Stopping SocketServerSource" name)
+    (.close (:socket @mutable-state))
+    (impl/stop-common-step execution-state mutable-state)
+    (log/info "Socket connection released")
+    (log/info "Stopped SocketServerSource" name)))
+
+(extend SocketClientHandler p/Outputter impl/common-outputter-implementation)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;<BaseCommandGrinder>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (def base-command (ICEBased.))
 
@@ -160,7 +181,7 @@
     (.setTripDistance (:cars/trip_kilometers res))
     (.setTotalDistance (:cars/constant_kilometers res))))
 
-(defrecord BaseCommandGrinder [state name threads conf poll-frequency time-unit]
+(defrecord BaseCommandGrinder [name threads queues tx poll-frequency time-unit execution-state mutable-state car-id db-cfg]
   p/Grinder
   (grind [_ _ shard]
     (let [v (tx-shard/getValue shard)]
@@ -170,10 +191,10 @@
       shard))
   p/Step
   (init [this]
-    (let [in (-> conf deref :channels :in)
-          out-ch (-> conf deref :channels :out :output-channel)
-          car-id (-> conf deref :car-id (UUID/fromString))
-          db-cfg (-> conf deref :db-cfg)
+    (reset! execution-state (impl/make-standard-state))
+    (let [in (-> queues :in)
+          out-ch (-> queues :out :output-channel)
+          car-id (-> car-id (UUID/fromString))
           ds (jdbc/get-datasource db-cfg)
           car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
           _ (when-not car-settings (throw (ex-info (str "No settings found for car-id " car-id) {:car-id car-id})))
@@ -181,14 +202,14 @@
           _ (doto trip (.setInitialized false))
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
-      (swap! conf assoc
+      (swap! mutable-state assoc
              :scheduled-fns [(p/take->future-loop this
                                                   executor
                                                   threads
                                                   in
                                                   out-ch
                                                   name
-                                                  state
+                                                  execution-state
                                                   poll-frequency
                                                   time-unit
                                                   (fn [t shard]
@@ -196,50 +217,21 @@
              :executor executor)
       (log/info "Initialized BaseCommandGrinder " name)))
   (validate [_]
-    (let [result (cond-> []
-                   (not (-> conf deref :channels :out :output-channel)) (conj "Does not contain out-channel")
-                   (nil? (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast"))]
-      (if (seq result)
-        (throw (ex-info "Problem validating BaseCommandGrinder conf!" {:message (str/join ", " result)}))
-        (log/debug "BaseCommandGrinder " name " validated"))))
-  (getState [_] @state)
-  (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (getConf [_] @conf)
+    (let [result (cond-> (concat (impl/validate-threads threads)
+                                 (impl/validate-polling poll-frequency time-unit)
+                                 (impl/validate-optional-tx-config tx))
+                   (not car-id) (conj "car-id is missing")
+                   (not db-cfg) (conj "db-cfg is missing"))]
+      (if-not (seq result)
+        (log/debug "Grinder " name " validated")
+        (throw (ex-info "Problem validating Grinder conf!" {:message (str/join ", " result)})))))
+  (getState [_] @execution-state)
+  (isFailFast [_ _] (-> tx :fail-fast?))
+  (getTxConf [_] tx)
   (stop [_]
     (log/info "Stopping BaseCommandGrinder" name)
-    (impl/stop-common-step state conf)
+    (impl/stop-common-step execution-state mutable-state)
     (log/info "Stopped BaseCommandGrinder" name)))
-
-(def ^:private basecommand-grinder-impl-fmt {:state v/atomic
-                                             :name v/non-empty-str
-                                             :conf v/atomic
-                                             :threads v/numeric
-                                             :poll-frequency v/numeric
-                                             :time-unit v/non-empty-str})
-
-(defmethod impl/validate-step-setup "coms-middleware.core/map->BaseCommandGrinder" [_ setup]
-  (let [[_ err] (v/validate basecommand-grinder-impl-fmt setup)]
-    (when err
-      (throw (ex-info "Problem validating BaseCommandGrinder" {:message (v/humanize-error err)})))))
-
-(defmethod impl/bootstrap-step "coms-middleware.core/map->BaseCommandGrinder"
-  [impl {name :name
-         conf :conf
-         tx :tx
-         pf :poll-frequency
-         time-unit :time-unit
-         threads :threads}]
-  (let [conf (assoc conf :tx tx)
-        setup {:poll-frequency pf
-               :time-unit time-unit
-               :name name
-               :conf conf
-               :threads threads
-               :state (atom {:total-step-calls 0
-                             :successful-step-calls 0
-                             :unsuccessful-step-calls 0
-                             :stopped false})}]
-    (impl/step-config->instance name impl setup)))
 
 (extend BaseCommandGrinder p/Dispatcher impl/default-dispatcher-implementation)
 (extend BaseCommandGrinder p/TxPurifier impl/default-tx-purifier-implementation)
@@ -255,11 +247,12 @@
       (.writeObject dos v))
     (.toByteArray buff)))
 
-(defrecord DashboardSink [state name threads conf poll-frequency time-unit]
+(defrecord DashboardSink [name threads queues fns tx poll-frequency time-unit execution-state mutable-state destination-host
+                          destination-port]
   p/Sink
   (sink [_ _ shard]
     (let [[_ & commands :as v] (tx-shard/getValue shard)
-          out-stream (:out-stream @conf)]
+          out-stream (:out-stream @mutable-state)]
       (log/debug "Sinking value " v " to " name)
       (when (seq commands)
         (doseq [c commands]
@@ -269,22 +262,24 @@
       shard))
   p/Step
   (validate [_]
-    (let [result (cond-> []
-                   (not (-> conf deref :channels :in)) (conj "Does not contain in-channel")
-                   (nil? (-> conf deref :tx :fail-fast?)) (conj "Does not contain fail fast")
-                   (not (-> conf deref :destination-host)) (conj "Does not contain destination host")
-                   (not (-> conf deref :destination-port)) (conj "Does not contain destination port"))]
+    (let [result (cond-> (concat (impl/validate-threads threads)
+                                 (impl/validate-polling poll-frequency time-unit)
+                                 (impl/validate-tx-config tx))
+                   (not (-> queues :in)) (conj "Does not contain in-channel")
+                   (not destination-host) (conj "Does not contain destination host")
+                   (not destination-port) (conj "Does not contain destination port"))]
       (if (seq result)
         (throw (ex-info "Problem validating DashboardSink conf!" {:message (str/join ", " result)}))
         (log/debug "DashboardSink " name " validated"))))
   (init [this]
-    (let [in (-> conf deref :channels :in)
+    (reset! execution-state (impl/make-standard-state))
+    (let [in (-> queues :in)
           executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
-          socket (Socket. (:destination-host @conf) (:destination-port @conf))
+          socket (Socket. destination-host destination-port)
           out-stream (ObjectOutputStream. (.getOutputStream socket))
           _ (.flush out-stream)]
-      (swap! conf
+      (swap! mutable-state
              assoc
              :out-stream out-stream
              :scheduled-fns [(p/take->future-loop this
@@ -293,56 +288,22 @@
                                                   in
                                                   nil
                                                   name
-                                                  state
+                                                  execution-state
                                                   poll-frequency
                                                   time-unit
                                                   (fn [t shard]
                                                     (p/sink this t shard)))]
              :executor executor)
       (log/info "Initialized DashboardSink " name)))
-  (getState [_] @state)
-  (isFailFast [_ _] (-> @conf :tx :fail-fast?))
-  (getConf [_] @conf)
+  (getState [_] @execution-state)
+  (isFailFast [_ _] (-> tx :fail-fast?))
+  (getTxConf [_] tx)
   (stop [_]
     (log/info "Stopping DashboardSink" name)
-    (impl/stop-common-step state conf)
-    (when-let [out-stream (:out-stream @conf)]
+    (impl/stop-common-step execution-state mutable-state)
+    (when-let [out-stream (:out-stream @mutable-state)]
       (try (.close out-stream) (catch Exception _)))
     (log/info "Stopped DashboardSink" name)))
-
-(def ^:private dashboard-sink-fmt {:state v/atomic
-                                   :name v/non-empty-str
-                                   :conf v/atomic
-                                   :threads v/numeric
-                                   :poll-frequency v/numeric
-                                   :time-unit v/non-empty-str})
-
-(defmethod impl/validate-step-setup "coms-middleware.core/map->DashboardSink" [_ setup]
-  (let [[_ err] (v/validate dashboard-sink-fmt setup)]
-    (when err
-      (throw (ex-info "Problem validating SinkImpl" {:message (v/humanize-error err)})))))
-
-(defmethod impl/bootstrap-step "coms-middleware.core/map->DashboardSink"
-  [impl {name :name
-         conf :conf
-         {^Symbol clean-up-fn :clean-up-fn fail-fast? :fail-fast? retries :retries} :tx
-         pf :poll-frequency
-         time-unit :time-unit
-         threads :threads}]
-  (let [clean-up-fn (common/resolve-function clean-up-fn)
-        conf (assoc conf :tx {:clean-up-fn clean-up-fn
-                              :fail-fast? (or fail-fast? false)
-                              :retries retries})
-        setup {:name name
-               :conf conf
-               :threads threads
-               :state (atom {:total-step-calls 0
-                             :successful-step-calls 0
-                             :unsuccessful-step-calls 0
-                             :stopped false})
-               :poll-frequency pf
-               :time-unit time-unit}]
-    (impl/step-config->instance name impl setup)))
 
 (extend DashboardSink p/Dispatcher impl/sink-dispatcher-implementation)
 (extend DashboardSink p/TxPurifier impl/default-tx-purifier-implementation)

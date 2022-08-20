@@ -2,33 +2,40 @@
   (:require [clojure.core.async :as async])
   (:import (pt.iceman.middleware.cars.ice ICEBased)
            (java.nio ByteBuffer)
-           (java.io ObjectOutputStream ByteArrayOutputStream)
-           (java.net InetSocketAddress DatagramPacket DatagramSocket)))
+           (java.io ObjectOutputStream ByteArrayOutputStream BufferedOutputStream)
+           (java.net InetSocketAddress DatagramPacket DatagramSocket Socket)))
 
-(defn make-socket
-  ([] (new DatagramSocket))
-  ([port] (new DatagramSocket port)))
+;(defn make-socket
+;  ([] (new DatagramSocket))
+;  ([port] (new DatagramSocket port)))
+;
+;(defn receive-packet
+;  "Block until a UDP message is received on the given DatagramSocket, and
+;  return the payload message as a string."
+;  [^DatagramSocket socket buffer-size]
+;  (let [buffer (byte-array buffer-size)
+;        packet (DatagramPacket. buffer buffer-size)]
+;    (.receive socket packet)
+;    (.getData packet)))
+;
+;(defn send-packet
+;  "Send a short textual message over a DatagramSocket to the specified
+;  host and port. If the string is over 512 bytes long, it will be
+;  truncated."
+;  [^DatagramSocket socket payload host port]
+;  (let [length (alength payload)
+;        address (InetSocketAddress. ^String host ^long port)
+;        packet (DatagramPacket. payload length address)]
+;    (.send socket packet)))
+;
+;(def socket (when-not *compile-files* (make-socket 4445)))
 
-(defn receive-packet
-  "Block until a UDP message is received on the given DatagramSocket, and
-  return the payload message as a string."
-  [^DatagramSocket socket buffer-size]
-  (let [buffer (byte-array buffer-size)
-        packet (DatagramPacket. buffer buffer-size)]
-    (.receive socket packet)
-    (.getData packet)))
+(def socket (when-not *compile-files* (Socket. "localhost" 9887)))
+(def out-stream (when-not *compile-files* (.getOutputStream socket)))
 
-(defn send-packet
-  "Send a short textual message over a DatagramSocket to the specified
-  host and port. If the string is over 512 bytes long, it will be
-  truncated."
-  [^DatagramSocket socket payload host port]
-  (let [length (alength payload)
-        address (InetSocketAddress. ^String host ^long port)
-        packet (DatagramPacket. payload length address)]
-    (.send socket packet)))
-
-(def socket (when-not *compile-files* (make-socket 4445)))
+(defn send-packet [out-stream data]
+  (.write out-stream data)
+  (.flush out-stream))
 
 (defn serialize
   "Serializes value, returns a byte array"
@@ -96,14 +103,16 @@
 
 (def lights [128 143 32 47 64 79 144 159 16 31 48 63 80 95 112 127])
 
-(def analog-values [180 176 192 224])
+(def analog-values [192 224])
 
 (defn simulate []
   (async/thread
     (loop []
       (let [light (rand-int (- (count lights) 1))
             analog-value (rand-int (- (count analog-values) 1))]
-        (send-packet socket (byte-array 1 (unchecked-byte (nth lights light))) "127.0.0.1" 9887)
-        (send-packet socket (byte-array 3 [(unchecked-byte (nth analog-values analog-value)) (unchecked-byte 91) (unchecked-byte 2)]) "127.0.0.1" 9887))
+        (send-packet out-stream (byte-array 3 [(unchecked-byte 176) (unchecked-byte 200) (unchecked-byte 0)]))
+        (send-packet out-stream (byte-array 3 [(unchecked-byte 180) (unchecked-byte 90) (unchecked-byte 2)]))
+        (send-packet out-stream (byte-array 1 (unchecked-byte (nth lights light))))
+        (send-packet out-stream (byte-array 3 [(unchecked-byte (nth analog-values analog-value)) (unchecked-byte 91) (unchecked-byte 2)])))
       ;(Thread/sleep 1)
       (recur))))

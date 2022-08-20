@@ -1,0 +1,84 @@
+{:api-server #profile {:default {:port 8181}
+                       :staging {:port 8181}
+                       :production {:port 8181}}
+ :steps #profile {:default {:tx-manager {:type :mem
+                                         :conf {:file "/Users/iceman/Desktop/test/transactions.edn"}}
+                            :global-state-manager {:type :mem
+                                                   :conf {}}
+                            :processing-type :local #_:distributed
+                            :queues [{:name "file-processor"
+                                      :buffer-size 1000}
+                                     {:name "file-interpreter"
+                                      :buffer-size 1000}
+                                     {:name "file-sink"
+                                      :buffer-size 1000}]
+                            :sources [{:name "file-importer"
+                                       :tx {:fail-fast? false
+                                            :clean-up-fn file-processor-test.core/cleanup-file
+                                            :retries 2}
+                                       :conf {:watch-dir "/Users/iceman/Documents/dev/t-scape/input"
+                                              :file-filter file-processor-test.core/file-filter
+                                              :channels {:out {:output-channel "file-processor"}}}
+                                       :v-fn (fn [conf]
+                                               (when (nil? (-> conf :channels :out :out-channel))
+                                                 {:data "No out channel name found!"}))
+                                       :type clojure-data-grinder-core.protocols.impl/map->FileWatcherSource
+                                       :threads 1}]
+                            :grinders [{:name "file-interpreter"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:channels {:in "file-processor"
+                                                          :out {:output-channel "file-interpreter"}}
+                                               :high-throughput? true}
+                                        :x-fn file-processor-test.core/interpret-file
+                                        :poll-frequency 200
+                                        :time-unit "us"
+                                        :threads 2}
+                                       {:name "file-interpreter"
+                                        :tx {:fail-fast? false
+                                             :retries 2}
+                                        :conf {:channels {:in "file-interpreter"
+                                                          :out {:output-channel "file-sink"}}
+                                               :high-throughput? true}
+                                        :x-fn file-processor-test.core/normalize-to-db
+                                        :poll-frequency 200
+                                        :time-unit "us"
+                                        :threads 2}]
+                            :error-sink {:name "logger-error"
+                                         :conf {}
+                                         :x-fn (fn [_ _ v] (clojure.tools.logging/error "ERROR FOUND!!!" v))
+                                         :poll-frequency 200
+                                         :time-unit "ms"
+                                         :threads 1}
+                            :sinks [{:name "file-sink"
+                                     :tx {:fail-fast? true}
+                                     :conf {:channels {:in "file-sink"}
+                                            :high-throughput? true
+                                            :db-name "file-interpreter"
+                                            :db-cfg {:dbtype "postgres"
+                                                     :dbname "file-interpreter"
+                                                     :host "127.0.0.1" #_"192.168.1.244"
+                                                     :port 5432
+                                                     :user "postgres"
+                                                     :password "postgres"}}
+                                     :x-fn file-processor-test.core/sink-values
+                                     :type clojure-data-grinder-core.protocols.impl/map->JDBCSink
+                                     :poll-frequency 200
+                                     :time-unit "us"
+                                     :threads 4}
+                                    {:name "file-mover"
+                                     :tx {:fail-fast? true}
+                                     :conf {:channels {:in "file-mover"}
+                                            :path "/Users/iceman/Desktop/test/input"}
+                                     :x-fn file-processor-test.core/move-files
+                                     :poll-frequency 200
+                                     :time-unit "us"
+                                     :threads 1}]
+                            :jobs [{:name "generate-files"
+                                    :tx {:fail-fast? false
+                                         :clean-up-fn (fn [_ _])}
+                                    :conf {:schedule "0 * * * * * *"
+                                           :channels {:out {:output-channel "file-mover"}}}
+                                    :x-fn file-processor-test.core/generate-files}]}
+                  :staging {}
+                  :production {}}}
