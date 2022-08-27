@@ -28,19 +28,23 @@ CREATE TABLE IF NOT EXISTS cars (
 --     FOREIGN KEY (owner) REFERENCES users (login)
     );
 
-DROP TABLE IF EXISTS car_trips CASCADE;
-CREATE TABLE IF NOT EXISTS car_trips (
+DROP TABLE IF EXISTS trips CASCADE;
+CREATE TABLE IF NOT EXISTS trips (
                                          id UUID,
                                          car_id UUID,
-                                         starting_km DOUBLE PRECISION,
-                                         ending_km DOUBLE PRECISION,
-                                         trip_length_km DOUBLE PRECISION,
-                                         max_temperature DOUBLE PRECISION,
-                                         max_speed DOUBLE PRECISION,
+                                         start_km DOUBLE PRECISION,
+                                         start_temp DOUBLE PRECISION,
+                                         start_fuel DOUBLE PRECISION,
                                          start_time TIMESTAMP,
+                                         trip_length_km DOUBLE PRECISION,
+                                         max_temp DOUBLE PRECISION,
+                                         max_speed DOUBLE PRECISION,
+                                         end_km DOUBLE PRECISION,
+                                         end_temp DOUBLE PRECISION,
+                                         end_fuel DOUBLE PRECISION,
                                          end_time TIMESTAMP,
-                                         trip_duration DOUBLE PRECISION,
-                                         average_speed DOUBLE PRECISION,
+                                         trip_duration_ms DOUBLE PRECISION,
+                                         avg_speed DOUBLE PRECISION,
 
                                          PRIMARY KEY (id),
     FOREIGN KEY (car_id) REFERENCES cars(id)
@@ -49,36 +53,42 @@ CREATE TABLE IF NOT EXISTS car_trips (
 DROP TABLE IF EXISTS speed_data CASCADE;
 CREATE TABLE IF NOT EXISTS speed_data (
                                           id UUID,
+                                          car_id UUID,
                                           trip_id UUID,
                                           speed DOUBLE PRECISION,
                                           rpm DOUBLE PRECISION,
                                           gear INT,
-                                          ts TIMESTAMP,
+                                          timestamp TIMESTAMP,
 
-                                          FOREIGN KEY (trip_id) REFERENCES car_trips (id),
-    PRIMARY KEY (id, ts)
+                                          FOREIGN KEY (car_id) REFERENCES cars (id),
+                                          FOREIGN KEY (trip_id) REFERENCES trips (id),
+    PRIMARY KEY (id)
     );
 
 DROP TABLE IF EXISTS temperature_data CASCADE;
 CREATE TABLE IF NOT EXISTS temperature_data (
                                                 id UUID,
+                                                car_id UUID,
                                                 trip_id UUID,
                                                 value DOUBLE PRECISION,
-                                                ts TIMESTAMP,
+                                                timestamp TIMESTAMP,
 
-                                                FOREIGN KEY (trip_id) REFERENCES car_trips (id),
+                                                FOREIGN KEY (car_id) REFERENCES cars (id),
+                                                FOREIGN KEY (trip_id) REFERENCES trips (id),
     PRIMARY KEY (id)
     );
 
 DROP TABLE IF EXISTS car_logs CASCADE;
 CREATE TABLE IF NOT EXISTS car_logs (
                                         id UUID,
+                                        car_id UUID,
                                         trip_id UUID,
                                         message TEXT,
-                                        ts TIMESTAMP,
+                                        timestamp TIMESTAMP,
                                         log_level TEXT,
 
-                                        FOREIGN KEY (trip_id) REFERENCES car_trips (id),
+                                        FOREIGN KEY (car_id) REFERENCES cars (id),
+                                        FOREIGN KEY (trip_id) REFERENCES trips (id),
     PRIMARY KEY (id)
     );
 
@@ -86,10 +96,13 @@ DROP TABLE IF EXISTS car_positions CASCADE;
 CREATE TABLE IF NOT EXISTS car_positions (
                                              id UUID,
                                              car_id UUID,
+                                             trip_id UUID,
                                              pos_lat DOUBLE PRECISION,
                                              pos_lon DOUBLE PRECISION,
-                                             created TIMESTAMP,
+                                             timestamp TIMESTAMP,
 
-                                             PRIMARY KEY (id),
-    FOREIGN KEY (car_id) REFERENCES cars(id)
+                                             FOREIGN KEY (car_id) REFERENCES cars(id),
+                                             FOREIGN KEY (trip_id) REFERENCES trips(id),
+
+                                             PRIMARY KEY (id)
     );

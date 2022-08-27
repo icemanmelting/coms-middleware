@@ -20,10 +20,16 @@
         #_(.setGear gear))
       [basecommand
        (SimpleCommand. "total-distance" abs)
-       (SimpleCommand. "speed" speed)])))
+       (SimpleCommand. "speed" speed)])
+    (do
+      (doto basecommand
+        (.setSpeed 0)
+        #_(.setGear gear))
+      [basecommand
+       (SimpleCommand. "speed" 0)])))
 
 (defn set-rpm [basecommand rpm-analog]
-  (let [rpm (int (/ (* rpm-analog 900) 155))]
+  (let [rpm (int (/ (* rpm-analog 830) 155))]
     (if (> rpm 0)
       [(doto basecommand
          (.setRpm rpm))

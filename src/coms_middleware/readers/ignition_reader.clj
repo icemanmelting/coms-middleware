@@ -2,7 +2,7 @@
   (:import (pt.iceman.middleware.cars.ice ICEBased)
            (pt.iceman.middleware.cars SimpleCommand Trip)
            (java.util UUID)
-           (java.sql Date)))
+           (java.sql Timestamp)))
 
 (defn ->ignition-on [basecommand trip _]
   (let [basecommand (if-not (.isIgnition basecommand)
@@ -14,7 +14,7 @@
                           (.setCarId (.getCarId basecommand))
                           (.setStartKm (.getTotalDistance basecommand))
                           (.setStartTemp (.getEngineTemperature basecommand))
-                          (.setStartTime (Date. (System/currentTimeMillis)))
+                          (.setStartTime (Timestamp. (System/currentTimeMillis)))
                           (.setMaxTemp (.getEngineTemperature basecommand))
                           (.setMaxSpeed (.getSpeed basecommand)))
                         (doto basecommand
@@ -46,7 +46,7 @@
                          (doto trip
                            (.setEndKm (.getTotalDistance base-command))
                            (.setEndTemp (.getEngineTemperature base-command))
-                           (.setEndTime (Date. (System/currentTimeMillis)))
+                           (.setEndTime (Timestamp. (System/currentTimeMillis)))
                            (.setEndFuel (.getFuelLevel base-command))
                            (.setInitialized false))
                          (clear-state-values base-command))

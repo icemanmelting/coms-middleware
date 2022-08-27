@@ -1,8 +1,6 @@
 (ns coms-middleware.core
   (:require [clojure.tools.logging :as log]
             [clojure-data-grinder-core.protocols.impl :as impl]
-            [clojure-data-grinder-core.common :as common]
-            [clojure-data-grinder-core.validation :as v]
             [clojure.string :as str]
             [coms-middleware.comm-protocol-interpreter :as interpreter]
             [clojure-data-grinder-tx-manager.protocols.transaction-shard :as tx-shard]
@@ -15,12 +13,11 @@
             [clojure-data-grinder-tx-manager.protocols.transaction :as tx])
   (:import (java.net DatagramPacket DatagramSocket InetSocketAddress Socket ServerSocket)
            (pt.iceman.middleware.cars.ice ICEBased)
-           (java.io ByteArrayOutputStream ObjectOutputStream ObjectInputStream BufferedInputStream InputStream)
-           (clojure.lang Symbol)
+           (java.io ByteArrayOutputStream ObjectOutputStream InputStream)
            (java.util.concurrent Executors)
            (java.util UUID)
-           (pt.iceman.middleware.cars BaseCommand Trip)
-           (java.sql Date))
+           (pt.iceman.middleware.cars Trip)
+           (java.sql Timestamp))
   (:gen-class))
 
 (defn make-socket
@@ -65,20 +62,19 @@
       {:command command
        :value (bytes-to-int (rest cmd-ar))})))
 
-(defrecord MCUSource [name queues tx poll-frequency time-unit execution-state mutable-state port]
+(defrecord MCUSource [name connects-to tx poll-frequency time-unit execution-state mutable-state port]
   p/Source
   p/Step
   (init [this]
     (reset! execution-state (impl/make-standard-state))
-    (let [out-ch (-> queues :out :output-channel)
-          socket (make-socket port)
+    (let [socket (make-socket port)
           executor (Executors/newScheduledThreadPool 1 (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))]
       (swap! mutable-state assoc
              :socket socket
              :scheduled-fns [(p/->future-loop this
                                               executor
                                               1
-                                              out-ch
+                                              connects-to
                                               name
                                               execution-state
                                               poll-frequency
@@ -94,8 +90,7 @@
   (validate [_]
     (let [result (cond-> (impl/validate-tx-config tx)
                    (not port) (conj "Does not contain port")
-                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535")
-                   (not (-> queues :out :output-channel)) (conj "Does not contain out-channel"))]
+                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535"))]
       (if (seq result)
         (throw (ex-info "Problem validating MCUSource conf!" {:message (str/join ", " result)}))
         (log/debug "MCUSource " name " validated"))))
@@ -113,26 +108,24 @@
 (extend MCUSource p/Taker impl/common-taker-implementation)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defrecord SocketClientHandler [in-stream tx out-queue state]
+(defrecord SocketClientHandler [in-stream tx connects-to state]
   Runnable
   (run [this]
     (while true
       (let [buff (byte-array 3)
             _ (.read ^InputStream in-stream buff)
             v (process-command buff)
-            _ (when (= 170 (:command v)) (log/info "Read" v))
             tx (tx-mng/startTx @tx-common/transaction-manager tx)
-            shard (tx/addShard tx v out-queue :ok)]
+            shard (tx/addShard tx v connects-to :ok)]
         (swap! state #(impl/m->inc-vals % [:total-step-calls :successful-step-calls]))
-        (p/output-to-channel this name nil nil out-queue shard)))))
+        (p/output-to-channel this name nil nil connects-to shard)))))
 
-(defrecord SocketServerSource [name queues tx execution-state mutable-state port]
+(defrecord SocketServerSource [name connects-to tx execution-state mutable-state port]
   p/Source
   p/Step
   (init [_]
     (reset! execution-state (impl/make-standard-state))
-    (let [out-queue (-> queues :out :output-channel)
-          ^ServerSocket socket (ServerSocket. port)]
+    (let [^ServerSocket socket (ServerSocket. port)]
       (swap! mutable-state assoc
              :socket socket
              :scheduled-fns [(future
@@ -141,7 +134,7 @@
                                        _ (log/info "Client Connected" client)
                                        handler (SocketClientHandler. (.getInputStream client)
                                                              tx
-                                                             out-queue
+                                                             connects-to
                                                              execution-state)]
                                    (.start (Thread. handler)))
                                  (recur)))]))
@@ -149,8 +142,7 @@
   (validate [_]
     (let [result (cond-> (impl/validate-tx-config tx)
                    (not port) (conj "Does not contain port")
-                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535")
-                   (not (-> queues :out :output-channel)) (conj "Does not contain out-channel"))]
+                   (not (number? port)) (conj "port needs to be a numeric value from 0 to 65535"))]
       (if (seq result)
         (throw (ex-info "Problem validating SocketServerSource conf!" {:message (str/join ", " result)}))
         (log/debug "SocketServerSource " name " validated"))))
@@ -181,7 +173,7 @@
     (.setTripDistance (:cars/trip_kilometers res))
     (.setTotalDistance (:cars/constant_kilometers res))))
 
-(defrecord BaseCommandGrinder [name threads queues tx poll-frequency time-unit execution-state mutable-state car-id db-cfg]
+(defrecord BaseCommandGrinder [name threads connects-to tx poll-frequency time-unit execution-state mutable-state car-id db-cfg]
   p/Grinder
   (grind [_ _ shard]
     (let [v (tx-shard/getValue shard)]
@@ -192,9 +184,7 @@
   p/Step
   (init [this]
     (reset! execution-state (impl/make-standard-state))
-    (let [in (-> queues :in)
-          out-ch (-> queues :out :output-channel)
-          car-id (-> car-id (UUID/fromString))
+    (let [car-id (-> car-id (UUID/fromString))
           ds (jdbc/get-datasource db-cfg)
           car-settings (first (jdbc/execute! ds ["select id, trip_kilometers, constant_kilometers from cars where id = ?" car-id]))
           _ (when-not car-settings (throw (ex-info (str "No settings found for car-id " car-id) {:car-id car-id})))
@@ -206,8 +196,7 @@
              :scheduled-fns [(p/take->future-loop this
                                                   executor
                                                   threads
-                                                  in
-                                                  out-ch
+                                                  connects-to
                                                   name
                                                   execution-state
                                                   poll-frequency
@@ -247,7 +236,7 @@
       (.writeObject dos v))
     (.toByteArray buff)))
 
-(defrecord DashboardSink [name threads queues fns tx poll-frequency time-unit execution-state mutable-state destination-host
+(defrecord DashboardSink [name threads connects-to fns tx poll-frequency time-unit execution-state mutable-state destination-host
                           destination-port]
   p/Sink
   (sink [_ _ shard]
@@ -265,7 +254,6 @@
     (let [result (cond-> (concat (impl/validate-threads threads)
                                  (impl/validate-polling poll-frequency time-unit)
                                  (impl/validate-tx-config tx))
-                   (not (-> queues :in)) (conj "Does not contain in-channel")
                    (not destination-host) (conj "Does not contain destination host")
                    (not destination-port) (conj "Does not contain destination port"))]
       (if (seq result)
@@ -273,8 +261,7 @@
         (log/debug "DashboardSink " name " validated"))))
   (init [this]
     (reset! execution-state (impl/make-standard-state))
-    (let [in (-> queues :in)
-          executor (Executors/newScheduledThreadPool threads
+    (let [executor (Executors/newScheduledThreadPool threads
                                                      (conc/counted-thread-factory (str "sn0wf1eld-" name "-%d") true))
           socket (Socket. destination-host destination-port)
           out-stream (ObjectOutputStream. (.getOutputStream socket))
@@ -285,8 +272,7 @@
              :scheduled-fns [(p/take->future-loop this
                                                   executor
                                                   threads
-                                                  in
-                                                  nil
+                                                 connects-to
                                                   name
                                                   execution-state
                                                   poll-frequency
@@ -351,6 +337,9 @@
                        :end_fuel (.getEndFuel trip)
                        :max_temp (.getMaxTemp trip)
                        :max_speed (.getMaxSpeed trip)
+                       :trip_length_km (- (.getEndKm trip) (.getStartKm trip))
+                       :trip_duration_ms (- (.getTime (.getEndTime trip))
+                                         (.getTime (.getStartTime trip)))
                        :end_time (.getEndTime trip)
                        :avg_speed (avg-speed (.getStartKm trip)
                                              (.getEndKm trip)
@@ -363,15 +352,15 @@
              (.isIgnition base-command))
     (jdbc-sql/insert! conn :speed_data {:id (UUID/randomUUID)
                                         :car_id (.getCarId base-command)
-                                        :trip_id (.getTripId trip)
-                                        :value (.getSpeed base-command)
+                                        :trip_id (.getId trip)
+                                        :speed (.getSpeed base-command)
                                         :rpm (.getRpm base-command)
                                         :gear 0
-                                        :timestamp (Date. (System/currentTimeMillis))})
+                                        :timestamp (Timestamp. (System/currentTimeMillis))})
     (jdbc-sql/insert! conn :temperature_data {:id (UUID/randomUUID)
                                               :car_id (.getCarId base-command)
-                                              :trip_id (.getTripId trip)
+                                              :trip_id (.getId trip)
                                               :value (.getEngineTemperature base-command)
-                                              :timestamp (Date. (System/currentTimeMillis))})))
+                                              :timestamp (Timestamp. (System/currentTimeMillis))})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;</JDBCSink>;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

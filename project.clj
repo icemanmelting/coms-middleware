@@ -16,6 +16,8 @@
                  [ring-cors "0.1.13" :scope "provided"]
                  [http-kit "2.6.0" :scope "provided"]
 
+                 [org.postgresql/postgresql "42.5.0"]
+
                  [com.h2database/h2 "2.1.214" :scope "test"]
                  [mockery "0.1.4" :scope "test"]]
   :repl-options {:init-ns coms-middleware.core})
